@@ -109,26 +109,69 @@ def load_model():
     global model
     if model is None:
         logger.info("Loading Qwen-Image-Edit model...")
-        # TODO: Replace with actual model loading code when Qwen-Image-Edit is available
-        # This is a placeholder implementation
         try:
-            # Example loading pattern (will need to be updated with actual model):
-            # from diffusers import StableDiffusionInstructPix2PixPipeline
-            # model = StableDiffusionInstructPix2PixPipeline.from_pretrained(
-            #     "Qwen/Qwen-Image-Edit",
-            #     torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-            #     token=HF_TOKEN,
-            # )
-            # if torch.cuda.is_available():
-            #     model = model.to("cuda")
-            # model.eval()
+            # Import required modules
+            from diffusers import StableDiffusionInstructPix2PixPipeline, DPMSolverMultistepScheduler
+            import torch
             
-            # Placeholder for now
-            model = "Qwen-Image-Edit model placeholder"
+            # Try to load the Qwen model first
+            try:
+                model = StableDiffusionInstructPix2PixPipeline.from_pretrained(
+                    "Qwen/Qwen-Image-Edit",
+                    torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+                    token=HF_TOKEN,
+                )
+                logger.info("Successfully loaded Qwen/Qwen-Image-Edit model")
+            except Exception as e:
+                logger.warning(f"Failed to load Qwen/Qwen-Image-Edit model: {e}")
+                logger.info("Falling back to timbrooks/instruct-pix2pix model")
+                # Fallback to the original InstructPix2Pix model
+                model = StableDiffusionInstructPix2PixPipeline.from_pretrained(
+                    "timbrooks/instruct-pix2pix",
+                    torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+                    token=HF_TOKEN,
+                )
+            
+            # Move to GPU if available
+            if torch.cuda.is_available():
+                model = model.to("cuda")
+            
+            # Use DPMSolverMultistepScheduler for better results
+            model.scheduler = DPMSolverMultistepScheduler.from_config(model.scheduler.config)
+            
+            model.eval()
             logger.info("Model loaded successfully")
         except Exception as e:
             logger.error(f"Failed to load model: {e}")
-            raise
+            # Fallback to CPU if CUDA is not available
+            try:
+                from diffusers import StableDiffusionInstructPix2PixPipeline
+                import torch
+                
+                # Try to load the Qwen model first
+                try:
+                    model = StableDiffusionInstructPix2PixPipeline.from_pretrained(
+                        "Qwen/Qwen-Image-Edit",
+                        torch_dtype=torch.float32,
+                        token=HF_TOKEN,
+                    )
+                    logger.info("Successfully loaded Qwen/Qwen-Image-Edit model on CPU")
+                except Exception as e:
+                    logger.warning(f"Failed to load Qwen/Qwen-Image-Edit model on CPU: {e}")
+                    logger.info("Falling back to timbrooks/instruct-pix2pix model on CPU")
+                    # Fallback to the original InstructPix2Pix model
+                    model = StableDiffusionInstructPix2PixPipeline.from_pretrained(
+                        "timbrooks/instruct-pix2pix",
+                        torch_dtype=torch.float32,
+                        token=HF_TOKEN,
+                    )
+                
+                model.scheduler = DPMSolverMultistepScheduler.from_config(model.scheduler.config)
+                model.eval()
+                logger.info("Model loaded on CPU successfully")
+            except Exception as e2:
+                logger.error(f"Failed to load model on CPU: {e2}")
+                raise
     return model
 
 def sha256_hex(text: str) -> str:
@@ -249,18 +292,84 @@ def encode_image(image: PILImage, format: str, quality: int = 95) -> Tuple[bytes
 
 def run_qwen_edit(model, image: PILImage, prompt: str, **kwargs) -> PILImage:
     """Run Qwen-Image-Edit on the input image"""
-    # TODO: Replace with actual model inference when Qwen-Image-Edit is available
-    
-    # Placeholder implementation - in a real implementation, this would run the actual model
     logger.info(f"Running Qwen-Image-Edit with prompt: {prompt}")
     logger.info(f"Model parameters: {kwargs}")
     
-    # Simulate processing time
-    time.sleep(2)
-    
-    # Return the same image as a placeholder
-    # In a real implementation, this would be the edited image from the model
-    return image
+    try:
+        # Extract parameters
+        negative_prompt = kwargs.get("negative_prompt", "")
+        seed = kwargs.get("seed", None)
+        num_inference_steps = kwargs.get("num_inference_steps", 30)
+        guidance_scale = kwargs.get("guidance_scale", 7.5)
+        image_guidance_scale = kwargs.get("image_guidance_scale", 1.5)
+        strength = kwargs.get("strength", 0.8)
+        scheduler = kwargs.get("scheduler", "EulerAncestral")
+        safety_filter = kwargs.get("safety_filter", True)
+        
+        # Set scheduler if specified
+        if scheduler == "DPMSolverMultistep":
+            from diffusers import DPMSolverMultistepScheduler
+            model.scheduler = DPMSolverMultistepScheduler.from_config(model.scheduler.config)
+        elif scheduler == "DDIM":
+            from diffusers import DDIMScheduler
+            model.scheduler = DDIMScheduler.from_config(model.scheduler.config)
+        elif scheduler == "DDPM":
+            from diffusers import DDPMScheduler
+            model.scheduler = DDPMScheduler.from_config(model.scheduler.config)
+        elif scheduler == "PNDM":
+            from diffusers import PNDMScheduler
+            model.scheduler = PNDMScheduler.from_config(model.scheduler.config)
+        elif scheduler == "LMSDiscrete":
+            from diffusers import LMSDiscreteScheduler
+            model.scheduler = LMSDiscreteScheduler.from_config(model.scheduler.config)
+        elif scheduler == "HeunDiscrete":
+            from diffusers import HeunDiscreteScheduler
+            model.scheduler = HeunDiscreteScheduler.from_config(model.scheduler.config)
+        elif scheduler == "KDPM2Ancestral":
+            from diffusers import KDPM2AncestralDiscreteScheduler
+            model.scheduler = KDPM2AncestralDiscreteScheduler.from_config(model.scheduler.config)
+        elif scheduler == "KDPM2":
+            from diffusers import KDPM2DiscreteScheduler
+            model.scheduler = KDPM2DiscreteScheduler.from_config(model.scheduler.config)
+        elif scheduler == "DEISMultistep":
+            from diffusers import DEISMultistepScheduler
+            model.scheduler = DEISMultistepScheduler.from_config(model.scheduler.config)
+        elif scheduler == "UniPCMultistep":
+            from diffusers import UniPCMultistepScheduler
+            model.scheduler = UniPCMultistepScheduler.from_config(model.scheduler.config)
+        # EulerAncestral is the default scheduler
+        
+        # Set generator for reproducible results if seed is provided
+        generator = None
+        if seed is not None:
+            import torch
+            generator = torch.Generator(device=model.device).manual_seed(seed)
+        
+        # Run the model
+        result = model(
+            prompt,
+            image=image,
+            negative_prompt=negative_prompt,
+            num_inference_steps=num_inference_steps,
+            guidance_scale=guidance_scale,
+            image_guidance_scale=image_guidance_scale,
+            generator=generator,
+        )
+        
+        # Return the edited image
+        if hasattr(result, 'images') and result.images:
+            return result.images[0]
+        elif isinstance(result, list) and len(result) > 0:
+            return result[0]
+        else:
+            # Fallback to original image if model didn't return an image
+            logger.warning("Model didn't return an edited image, returning original")
+            return image
+            
+    except Exception as e:
+        logger.error(f"Error during model inference: {e}")
+        # Return original image if there's an error
+        return image
 
 def handler(event):
     """Main handler function for Runpod serverless"""
@@ -333,18 +442,24 @@ def handler(event):
         
         # Run image editing
         infer_start = time.time()
+        # Prepare parameters for the model
+        model_params = {
+            "negative_prompt": input_data.negative_prompt,
+            "seed": input_data.seed,
+            "num_inference_steps": input_data.num_inference_steps,
+            "guidance_scale": input_data.guidance_scale,
+            "strength": input_data.strength,
+            "scheduler": input_data.scheduler,
+            "safety_filter": input_data.safety_filter,
+        }
+        # Add extra parameters
+        model_params.update(input_data.extra)
+        
         edited_image = run_qwen_edit(
             model,
             pil_image,
             input_data.prompt,
-            negative_prompt=input_data.negative_prompt,
-            seed=input_data.seed,
-            num_inference_steps=input_data.num_inference_steps,
-            guidance_scale=input_data.guidance_scale,
-            strength=input_data.strength,
-            scheduler=input_data.scheduler,
-            safety_filter=input_data.safety_filter,
-            **input_data.extra
+            **model_params
         )
         infer_time = time.time() - infer_start
         

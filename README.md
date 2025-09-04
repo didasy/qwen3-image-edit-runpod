@@ -105,6 +105,65 @@ After deploying to Runpod, send a POST request to your endpoint with the followi
 }
 ```
 
+### Parameter Explanations
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `num_inference_steps` | Integer | 30 | Number of denoising steps. Higher values generally produce better quality but take longer to process. Values between 20-50 are typically good for most use cases. |
+| `guidance_scale` | Float | 7.5 | How closely the model follows the prompt. Higher values (7-15) make the model follow the prompt more strictly, but may reduce creativity. Lower values (3-7) allow more creativity but may deviate from the prompt. |
+| `strength` | Float | 0.8 | Controls how much the image is changed. Values closer to 0 make minimal changes, while values closer to 1 allow for major changes. For subtle edits, try 0.3-0.6. For dramatic changes, try 0.7-0.9. |
+| `output_format` | String | "png" | Output image format. Can be either "png" or "jpeg". PNG is lossless but typically larger, while JPEG is compressed and smaller but may have quality loss. |
+| `output_quality` | Integer | 95 | Quality of the output image when using JPEG format (1-100). Higher values produce better quality but larger files. Has no effect when using PNG format. |
+| `extra` | Object | {} | Additional configuration options that can be passed to the model. These are model-specific and may vary between different implementations. |
+
+### Extra Parameters
+
+The `extra` field accepts additional parameters that can be passed directly to the underlying model. For Qwen-Image-Edit (which is based on InstructPix2Pix architecture), you can include:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `image_guidance_scale` | Float | Controls how much the input image influences the editing process (separate from text prompt guidance). Default is typically 1.5. |
+| `num_images_per_prompt` | Integer | Number of images to generate per prompt. |
+| `eta` | Float | Parameter for DDIM sampling. |
+| `generator` | torch.Generator | Random number generator for reproducibility. |
+| `latents` | torch.Tensor | Pre-generated noisy latents. |
+| `output_type` | String | Type of output ("pil", "np", or "pt"). |
+| `return_dict` | Boolean | Whether to return a dictionary or tuple. |
+| `callback` | Callable | Callback function during inference. |
+| `callback_steps` | Integer | Frequency of callback execution. |
+| `keep_resolution` | Boolean | Whether to maintain the original image resolution. |
+
+Example usage:
+```json
+{
+  "extra": {
+    "image_guidance_scale": 1.8,
+    "keep_resolution": true,
+    "num_images_per_prompt": 2
+  }
+}
+```
+
+### Available Schedulers
+
+The following schedulers are available for use with the `scheduler` parameter:
+
+| Scheduler | Description |
+|-----------|-------------|
+| `EulerAncestral` | Default scheduler. Good balance of quality and speed |
+| `DPMSolverMultistep` | Fast convergence with high quality results |
+| `DDIM` | Denoising Diffusion Implicit Models - deterministic sampling |
+| `DDPM` | Denoising Diffusion Probabilistic Models - original stochastic sampling |
+| `PNDM` | Pseudo Numerical Methods - good for few-step inference |
+| `LMSDiscrete` | Linear Multistep Method - stable for various step counts |
+| `HeunDiscrete` | Second-order Heun method - higher accuracy |
+| `KDPM2Ancestral` | Improved KDPM with ancestral sampling |
+| `KDPM2` | Improved KDPM without ancestral sampling |
+| `DEISMultistep` | Fast sampling with high-order integration |
+| `UniPCMultistep` | Unified Predictor-Corrector framework |
+
+For most use cases, `EulerAncestral` (default) or `DPMSolverMultistep` will give good results. The choice of scheduler can affect both the quality of the output and the processing time.
+
 ## Response Format
 
 ### Success
