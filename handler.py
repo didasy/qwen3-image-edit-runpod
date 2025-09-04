@@ -138,11 +138,11 @@ class ImageEditInput(BaseModel):
 model = None
 
 def load_model():
-    """Load the Qwen-Image-Edit model once at cold start"""
+    """Load the Qwen-Image-Edit model once at cold start with VRAM optimizations"""
     global model
     if model is None:
         job_id = "MODEL_INIT"
-        logger.info(job_id, "Loading Qwen-Image-Edit model...")
+        logger.info(job_id, "Loading Qwen-Image-Edit model with VRAM optimizations...")
         load_start = time.time()
         
         try:
@@ -157,23 +157,57 @@ def load_model():
             
             logger.info(job_id, "CUDA is available", device_count=torch.cuda.device_count())
             
-            # Load the Qwen model
+            # Load the Qwen model with memory optimizations
             model_load_start = time.time()
+            
+            # Enable memory efficient attention (xformers) if available
+            enable_xformers = False
+            try:
+                import xformers
+                enable_xformers = True
+                logger.info(job_id, "xformers available, will enable memory efficient attention")
+            except ImportError:
+                logger.warning(job_id, "xformers not available, using default attention")
+            
+            # Load model with optimizations
             model = QwenImagePipeline.from_pretrained(
                 "Qwen/Qwen-Image-Edit",
-                torch_dtype=torch.bfloat16,
+                torch_dtype=torch.float16,  # Use float16 instead of bfloat16 for lower memory usage
                 token=HF_TOKEN,
             )
+            
+            # Enable memory efficient attention if available
+            if enable_xformers:
+                try:
+                    model.enable_xformers_memory_efficient_attention()
+                    logger.info(job_id, "Enabled xformers memory efficient attention")
+                except Exception as e:
+                    logger.warning(job_id, "Failed to enable xformers memory efficient attention", error=str(e))
+            
+            # Enable model CPU offload for parts of the model
+            try:
+                model.enable_model_cpu_offload()
+                logger.info(job_id, "Enabled model CPU offload")
+            except Exception as e:
+                logger.warning(job_id, "Failed to enable model CPU offload", error=str(e))
+                # Fallback to regular GPU loading
+                move_start = time.time()
+                model = model.to("cuda")
+                move_time = time.time() - move_start
+                logger.info(job_id, "Moved model to CUDA", move_time=f"{move_time:.2f}s")
+            
+            # Enable attention slicing for additional memory savings
+            try:
+                model.enable_attention_slicing()
+                logger.info(job_id, "Enabled attention slicing")
+            except Exception as e:
+                logger.warning(job_id, "Failed to enable attention slicing", error=str(e))
+            
             model_load_time = time.time() - model_load_start
             logger.info(job_id, "Successfully loaded Qwen/Qwen-Image-Edit model", 
                        load_time=f"{model_load_time:.2f}s",
-                       dtype=str(model.dtype))
-            
-            # Move to GPU
-            move_start = time.time()
-            model = model.to("cuda")
-            move_time = time.time() - move_start
-            logger.info(job_id, "Moved model to CUDA", move_time=f"{move_time:.2f}s")
+                       dtype=str(model.dtype),
+                       xformers_enabled=enable_xformers)
             
             # Use DPMSolverMultistepScheduler for better results
             scheduler_start = time.time()
@@ -323,7 +357,7 @@ def encode_image(job_id: str, image: PILImage, format: str, quality: int = 95) -
     return image_bytes, extension, content_type
 
 def run_qwen_edit(job_id: str, model, image: PILImage, prompt: str, **kwargs) -> PILImage:
-    """Run Qwen-Image-Edit on the input image"""
+    """Run Qwen-Image-Edit on the input image with VRAM optimizations"""
     logger.info(job_id, "Running Qwen-Image-Edit", prompt=prompt)
     logger.debug(job_id, "Model parameters", **kwargs)
     
@@ -337,6 +371,9 @@ def run_qwen_edit(job_id: str, model, image: PILImage, prompt: str, **kwargs) ->
         strength = kwargs.get("strength", 0.8)
         scheduler = kwargs.get("scheduler", "EulerAncestral")
         safety_filter = kwargs.get("safety_filter", True)
+        
+        # Limit inference steps to reduce memory usage
+        num_inference_steps = min(num_inference_steps, 50)  # Cap at 50 steps
         
         # Set scheduler if specified
         scheduler_start = time.time()
@@ -395,6 +432,15 @@ def run_qwen_edit(job_id: str, model, image: PILImage, prompt: str, **kwargs) ->
         )
         infer_time = time.time() - infer_start
         
+        # Clear GPU cache after inference to free up memory
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                logger.debug(job_id, "Cleared CUDA cache after inference")
+        except Exception as e:
+            logger.warning(job_id, "Failed to clear CUDA cache", error=str(e))
+        
         # Return the edited image
         if hasattr(result, 'images') and result.images:
             logger.info(job_id, "Model inference completed successfully", 
@@ -413,6 +459,14 @@ def run_qwen_edit(job_id: str, model, image: PILImage, prompt: str, **kwargs) ->
             
     except Exception as e:
         logger.error(job_id, "Error during model inference", error=str(e))
+        # Clear GPU cache even on error
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                logger.debug(job_id, "Cleared CUDA cache after inference error")
+        except Exception as ce:
+            logger.warning(job_id, "Failed to clear CUDA cache after error", error=str(ce))
         # Return original image if there's an error
         return image
 
@@ -448,6 +502,15 @@ def warmup_model(job_id: str) -> dict:
             **warmup_params
         )
         
+        # Clear cache after warmup
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                logger.debug(job_id, "Cleared CUDA cache after warmup")
+        except Exception as e:
+            logger.warning(job_id, "Failed to clear CUDA cache after warmup", error=str(e))
+        
         warmup_time = time.time() - warmup_start
         logger.info(job_id, "Model warmup completed successfully", warmup_time=f"{warmup_time:.2f}s")
         
@@ -460,6 +523,14 @@ def warmup_model(job_id: str) -> dict:
         }
     except Exception as e:
         logger.error(job_id, "Error during model warmup", error=str(e), exc_info=True)
+        # Clear cache even on error
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                logger.debug(job_id, "Cleared CUDA cache after warmup error")
+        except Exception as ce:
+            logger.warning(job_id, "Failed to clear CUDA cache after warmup error", error=str(ce))
         return {
             "status": "error",
             "error": {

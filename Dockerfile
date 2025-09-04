@@ -29,7 +29,7 @@ RUN pip install --no-cache-dir \
     huggingface-hub \
     hf-transfer \
     transformers \
-    diffusers==0.35.1 \
+    diffusers>=0.35.1 \
     accelerate \
     safetensors \
     timm \
