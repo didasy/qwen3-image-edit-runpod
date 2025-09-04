@@ -22,9 +22,42 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# Configure logging
-logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
-logger = logging.getLogger(__name__)
+# Configure logging with custom formatter for structured logging
+class StructuredLogger:
+    def __init__(self, name: str):
+        self.logger = logging.getLogger(name)
+        self.logger.setLevel(os.getenv("LOG_LEVEL", "INFO"))
+        
+        # Avoid adding multiple handlers if the logger already has handlers
+        if not self.logger.handlers:
+            handler = logging.StreamHandler()
+            formatter = logging.Formatter(
+                '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+            )
+            handler.setFormatter(formatter)
+            self.logger.addHandler(handler)
+    
+    def _format_message(self, job_id: str, message: str, **kwargs) -> str:
+        """Format log message with job ID and additional context"""
+        base_msg = f"[Job: {job_id}] {message}"
+        if kwargs:
+            context = " | ".join([f"{k}: {v}" for k, v in kwargs.items()])
+            return f"{base_msg} | {context}"
+        return base_msg
+    
+    def info(self, job_id: str, message: str, **kwargs):
+        self.logger.info(self._format_message(job_id, message, **kwargs))
+        
+    def warning(self, job_id: str, message: str, **kwargs):
+        self.logger.warning(self._format_message(job_id, message, **kwargs))
+        
+    def error(self, job_id: str, message: str, **kwargs):
+        self.logger.error(self._format_message(job_id, message, **kwargs))
+        
+    def debug(self, job_id: str, message: str, **kwargs):
+        self.logger.debug(self._format_message(job_id, message, **kwargs))
+
+logger = StructuredLogger(__name__)
 
 # Environment variables
 S3_ENDPOINT = os.getenv("S3_ENDPOINT")
@@ -108,41 +141,68 @@ def load_model():
     """Load the Qwen-Image-Edit model once at cold start"""
     global model
     if model is None:
-        logger.info("Loading Qwen-Image-Edit model...")
+        job_id = "MODEL_INIT"
+        logger.info(job_id, "Loading Qwen-Image-Edit model...")
+        load_start = time.time()
+        
         try:
             # Import required modules
             from diffusers import QwenImagePipeline, DPMSolverMultistepScheduler
             import torch
             
+            # Log CUDA availability
+            if torch.cuda.is_available():
+                logger.info(job_id, "CUDA is available", device_count=torch.cuda.device_count())
+            else:
+                logger.info(job_id, "CUDA is not available, using CPU")
+            
             # Try to load the Qwen model first
             try:
+                model_load_start = time.time()
                 model = QwenImagePipeline.from_pretrained(
                     "Qwen/Qwen-Image-Edit",
                     torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
                     token=HF_TOKEN,
                 )
-                logger.info("Successfully loaded Qwen/Qwen-Image-Edit model")
+                model_load_time = time.time() - model_load_start
+                logger.info(job_id, "Successfully loaded Qwen/Qwen-Image-Edit model", 
+                           load_time=f"{model_load_time:.2f}s",
+                           dtype=str(model.dtype))
             except Exception as e:
-                logger.warning(f"Failed to load Qwen/Qwen-Image-Edit model: {e}")
-                logger.info("Falling back to timbrooks/instruct-pix2pix model")
+                logger.warning(job_id, "Failed to load Qwen/Qwen-Image-Edit model", error=str(e))
+                logger.info(job_id, "Falling back to timbrooks/instruct-pix2pix model")
                 # Fallback to the original InstructPix2Pix model
+                model_load_start = time.time()
                 model = QwenImagePipeline.from_pretrained(
                     "timbrooks/instruct-pix2pix",
                     torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
                     token=HF_TOKEN,
                 )
+                model_load_time = time.time() - model_load_start
+                logger.info(job_id, "Loaded timbrooks/instruct-pix2pix model", 
+                           load_time=f"{model_load_time:.2f}s",
+                           dtype=str(model.dtype))
             
             # Move to GPU if available
             if torch.cuda.is_available():
+                move_start = time.time()
                 model = model.to("cuda")
+                move_time = time.time() - move_start
+                logger.info(job_id, "Moved model to CUDA", move_time=f"{move_time:.2f}s")
             
             # Use DPMSolverMultistepScheduler for better results
+            scheduler_start = time.time()
             model.scheduler = DPMSolverMultistepScheduler.from_config(model.scheduler.config)
+            scheduler_time = time.time() - scheduler_start
+            logger.info(job_id, "Scheduler configured", 
+                       scheduler_type="DPMSolverMultistep",
+                       config_time=f"{scheduler_time:.2f}s")
             
             model.eval()
-            logger.info("Model loaded successfully")
+            load_time = time.time() - load_start
+            logger.info(job_id, "Model loaded successfully", total_load_time=f"{load_time:.2f}s")
         except Exception as e:
-            logger.error(f"Failed to load model: {e}")
+            logger.error(job_id, "Failed to load model", error=str(e))
             # Fallback to CPU if CUDA is not available
             try:
                 from diffusers import QwenImagePipeline
@@ -150,27 +210,41 @@ def load_model():
                 
                 # Try to load the Qwen model first
                 try:
+                    model_load_start = time.time()
                     model = QwenImagePipeline.from_pretrained(
                         "Qwen/Qwen-Image-Edit",
                         torch_dtype=torch.float32,
                         token=HF_TOKEN,
                     )
-                    logger.info("Successfully loaded Qwen/Qwen-Image-Edit model on CPU")
+                    model_load_time = time.time() - model_load_start
+                    logger.info(job_id, "Successfully loaded Qwen/Qwen-Image-Edit model on CPU", 
+                               load_time=f"{model_load_time:.2f}s")
                 except Exception as e:
-                    logger.warning(f"Failed to load Qwen/Qwen-Image-Edit model on CPU: {e}")
-                    logger.info("Falling back to timbrooks/instruct-pix2pix model on CPU")
+                    logger.warning(job_id, "Failed to load Qwen/Qwen-Image-Edit model on CPU", error=str(e))
+                    logger.info(job_id, "Falling back to timbrooks/instruct-pix2pix model on CPU")
                     # Fallback to the original InstructPix2Pix model
+                    model_load_start = time.time()
                     model = QwenImagePipeline.from_pretrained(
                         "timbrooks/instruct-pix2pix",
                         torch_dtype=torch.float32,
                         token=HF_TOKEN,
                     )
+                    model_load_time = time.time() - model_load_start
+                    logger.info(job_id, "Loaded timbrooks/instruct-pix2pix model on CPU", 
+                               load_time=f"{model_load_time:.2f}s")
                 
+                scheduler_start = time.time()
                 model.scheduler = DPMSolverMultistepScheduler.from_config(model.scheduler.config)
+                scheduler_time = time.time() - scheduler_start
+                logger.info(job_id, "Scheduler configured on CPU", 
+                           scheduler_type="DPMSolverMultistep",
+                           config_time=f"{scheduler_time:.2f}s")
+                
                 model.eval()
-                logger.info("Model loaded on CPU successfully")
+                load_time = time.time() - load_start
+                logger.info(job_id, "Model loaded on CPU successfully", total_load_time=f"{load_time:.2f}s")
             except Exception as e2:
-                logger.error(f"Failed to load model on CPU: {e2}")
+                logger.error(job_id, "Failed to load model on CPU", error=str(e2))
                 raise
     return model
 
@@ -221,9 +295,10 @@ def validate_content_type(content_type: str) -> bool:
     ]
     return content_type.lower() in allowed_types
 
-def download_image(url: str) -> Tuple[bytes, str, str]:
+def download_image(job_id: str, url: str) -> Tuple[bytes, str, str]:
     """Download image from URL with validation"""
-    logger.info(f"Downloading image from {url}")
+    logger.info(job_id, "Starting image download", url=url)
+    download_start = time.time()
     
     # Validate URL scheme
     parsed = urlparse(url)
@@ -260,19 +335,29 @@ def download_image(url: str) -> Tuple[bytes, str, str]:
         # Determine extension
         extension = get_image_extension(content_type, url)
         
-        logger.info(f"Downloaded image: {len(image_bytes)} bytes, type: {content_type}, ext: {extension}")
+        download_time = time.time() - download_start
+        logger.info(job_id, "Image downloaded successfully", 
+                   bytes=len(image_bytes), 
+                   content_type=content_type, 
+                   extension=extension,
+                   download_time=f"{download_time:.2f}s")
         return image_bytes, extension, content_type
         
     except requests.exceptions.RequestException as e:
+        logger.error(job_id, "Failed to download image", error=str(e))
         raise ValueError(f"Failed to download image: {str(e)}")
 
-def encode_image(image: PILImage, format: str, quality: int = 95) -> Tuple[bytes, str, str]:
+def encode_image(job_id: str, image: PILImage, format: str, quality: int = 95) -> Tuple[bytes, str, str]:
     """Encode PIL image to bytes with specified format"""
+    logger.debug(job_id, "Encoding image", format=format, quality=quality, mode=image.mode)
+    encode_start = time.time()
+    
     buffer = io.BytesIO()
     
     if format == "jpeg":
         # Convert RGBA to RGB if needed for JPEG
         if image.mode in ("RGBA", "LA", "P"):
+            logger.debug(job_id, "Converting image mode for JPEG", from_mode=image.mode, to_mode="RGB")
             background = Image.new("RGB", image.size, (255, 255, 255))
             background.paste(image, mask=image.split()[-1] if image.mode == "RGBA" else None)
             image = background
@@ -287,13 +372,17 @@ def encode_image(image: PILImage, format: str, quality: int = 95) -> Tuple[bytes
     image_bytes = buffer.getvalue()
     buffer.close()
     
-    logger.info(f"Encoded image: {len(image_bytes)} bytes, format: {format}")
+    encode_time = time.time() - encode_start
+    logger.info(job_id, "Image encoded successfully", 
+               bytes=len(image_bytes), 
+               format=format,
+               encode_time=f"{encode_time:.2f}s")
     return image_bytes, extension, content_type
 
-def run_qwen_edit(model, image: PILImage, prompt: str, **kwargs) -> PILImage:
+def run_qwen_edit(job_id: str, model, image: PILImage, prompt: str, **kwargs) -> PILImage:
     """Run Qwen-Image-Edit on the input image"""
-    logger.info(f"Running Qwen-Image-Edit with prompt: {prompt}")
-    logger.info(f"Model parameters: {kwargs}")
+    logger.info(job_id, "Running Qwen-Image-Edit", prompt=prompt)
+    logger.debug(job_id, "Model parameters", **kwargs)
     
     try:
         # Extract parameters
@@ -307,6 +396,7 @@ def run_qwen_edit(model, image: PILImage, prompt: str, **kwargs) -> PILImage:
         safety_filter = kwargs.get("safety_filter", True)
         
         # Set scheduler if specified
+        scheduler_start = time.time()
         if scheduler == "DPMSolverMultistep":
             from diffusers import DPMSolverMultistepScheduler
             model.scheduler = DPMSolverMultistepScheduler.from_config(model.scheduler.config)
@@ -339,13 +429,18 @@ def run_qwen_edit(model, image: PILImage, prompt: str, **kwargs) -> PILImage:
             model.scheduler = UniPCMultistepScheduler.from_config(model.scheduler.config)
         # EulerAncestral is the default scheduler
         
+        scheduler_time = time.time() - scheduler_start
+        logger.debug(job_id, "Scheduler configured", scheduler=scheduler, config_time=f"{scheduler_time:.2f}s")
+        
         # Set generator for reproducible results if seed is provided
         generator = None
         if seed is not None:
             import torch
             generator = torch.Generator(device=model.device).manual_seed(seed)
+            logger.debug(job_id, "Generator set with seed", seed=seed)
         
         # Run the model
+        infer_start = time.time()
         result = model(
             prompt,
             image=image,
@@ -355,40 +450,110 @@ def run_qwen_edit(model, image: PILImage, prompt: str, **kwargs) -> PILImage:
             image_guidance_scale=image_guidance_scale,
             generator=generator,
         )
+        infer_time = time.time() - infer_start
         
         # Return the edited image
         if hasattr(result, 'images') and result.images:
+            logger.info(job_id, "Model inference completed successfully", 
+                       inference_time=f"{infer_time:.2f}s",
+                       result_type="images_object")
             return result.images[0]
         elif isinstance(result, list) and len(result) > 0:
+            logger.info(job_id, "Model inference completed successfully", 
+                       inference_time=f"{infer_time:.2f}s",
+                       result_type="list")
             return result[0]
         else:
             # Fallback to original image if model didn't return an image
-            logger.warning("Model didn't return an edited image, returning original")
+            logger.warning(job_id, "Model didn't return an edited image, returning original")
             return image
             
     except Exception as e:
-        logger.error(f"Error during model inference: {e}")
+        logger.error(job_id, "Error during model inference", error=str(e))
         # Return original image if there's an error
         return image
+
+
+def warmup_model(job_id: str) -> dict:
+    """Warm up the model by running a simple inference"""
+    logger.info(job_id, "Starting model warmup")
+    warmup_start = time.time()
+    
+    try:
+        # Load model if not already loaded
+        model = load_model()
+        
+        # Create a simple test image (black 64x64 image)
+        import numpy as np
+        test_image_array = np.zeros((64, 64, 3), dtype=np.uint8)
+        test_image = Image.fromarray(test_image_array)
+        
+        # Run a simple inference with minimal steps
+        warmup_params = {
+            "num_inference_steps": 1,
+            "guidance_scale": 7.5,
+            "image_guidance_scale": 1.5,
+            "strength": 0.8
+        }
+        
+        logger.info(job_id, "Running warmup inference", **warmup_params)
+        result_image = run_qwen_edit(
+            job_id,
+            model,
+            test_image,
+            "warmup test",
+            **warmup_params
+        )
+        
+        warmup_time = time.time() - warmup_start
+        logger.info(job_id, "Model warmup completed successfully", warmup_time=f"{warmup_time:.2f}s")
+        
+        return {
+            "status": "success",
+            "result": {
+                "message": "Model warmed up successfully",
+                "warmup_time": warmup_time
+            }
+        }
+    except Exception as e:
+        logger.error(job_id, "Error during model warmup", error=str(e), exc_info=True)
+        return {
+            "status": "error",
+            "error": {
+                "type": "WarmupError",
+                "message": str(e),
+                "details": {
+                    "job_id": job_id
+                }
+            }
+        }
 
 def handler(event):
     """Main handler function for Runpod serverless"""
     start_time = time.time()
     job_id = event.get("id", str(uuid.uuid4()))
     
-    logger.info(f"Processing job {job_id}")
+    logger.info(job_id, "Processing job")
+    
+    # Check if this is a warmup request
+    if event.get("input", {}).get("warmup", False):
+        logger.info(job_id, "Processing warmup request")
+        return warmup_model(job_id)
     
     try:
         # Parse and validate input
         input_data = ImageEditInput(**event["input"])
-        logger.info(f"Input validated: {input_data}")
+        logger.info(job_id, "Input validated", 
+                   prompt=input_data.prompt,
+                   image_url=str(input_data.image_url),
+                   num_inference_steps=input_data.num_inference_steps,
+                   guidance_scale=input_data.guidance_scale)
         
         # Hash the image URL
         url_hash = sha256_hex(str(input_data.image_url))
-        logger.info(f"URL hash: {url_hash}")
+        logger.debug(job_id, "URL hashed", url_hash=url_hash)
         
         # Timing variables
-        download_start = time.time()
         download_time = 0
         infer_time = 0
         upload_time = 0
@@ -402,20 +567,21 @@ def handler(event):
         
         try:
             # Try to get from cache first
-            logger.info(f"Checking cache for {cache_key}")
+            logger.info(job_id, "Checking cache", cache_key=cache_key)
             response = minio_client.get_object(S3_BUCKET, cache_key + ".png")
             image_bytes = response.read()
             response.close()
             response.release_conn()
             extension = "png"
             content_type = "image/png"
+            logger.info(job_id, "Image found in cache")
         except S3Error as e:
             if e.code == "NoSuchKey":
                 # Not in cache, download from URL
-                logger.info("Image not in cache, downloading...")
+                logger.info(job_id, "Image not in cache, downloading...")
                 source = "download"
                 download_start = time.time()
-                image_bytes, extension, content_type = download_image(str(input_data.image_url))
+                image_bytes, extension, content_type = download_image(job_id, str(input_data.image_url))
                 download_time = time.time() - download_start
                 
                 # Save to cache
@@ -428,20 +594,27 @@ def handler(event):
                         len(image_bytes),
                         content_type=content_type
                     )
-                    logger.info(f"Cached image as {cache_key_with_ext}")
+                    logger.info(job_id, "Cached image", cache_key=cache_key_with_ext)
                 except Exception as e:
-                    logger.warning(f"Failed to cache image: {e}")
+                    logger.warning(job_id, "Failed to cache image", error=str(e))
             else:
+                logger.error(job_id, "Cache error", error=str(e))
                 raise ValueError(f"Cache error: {e}")
         
         # Decode image
+        decode_start = time.time()
         image_stream = io.BytesIO(image_bytes)
         pil_image = Image.open(image_stream).convert("RGB")
         width, height = pil_image.size
-        logger.info(f"Loaded image: {width}x{height} pixels")
+        decode_time = time.time() - decode_start
+        logger.info(job_id, "Image loaded", 
+                   width=width, 
+                   height=height, 
+                   mode=pil_image.mode,
+                   decode_time=f"{decode_time:.2f}s")
         
         # Run image editing
-        infer_start = time.time()
+        logger.info(job_id, "Starting image editing")
         # Prepare parameters for the model
         model_params = {
             "negative_prompt": input_data.negative_prompt,
@@ -456,15 +629,16 @@ def handler(event):
         model_params.update(input_data.extra)
         
         edited_image = run_qwen_edit(
+            job_id,
             model,
             pil_image,
             input_data.prompt,
             **model_params
         )
-        infer_time = time.time() - infer_start
         
         # Encode result
         result_bytes, result_ext, result_content_type = encode_image(
+            job_id,
             edited_image,
             input_data.output_format,
             input_data.output_quality
@@ -491,6 +665,10 @@ def handler(event):
         
         # Calculate total time
         total_time = time.time() - start_time
+        
+        logger.info(job_id, "Job completed successfully", 
+                   total_time=f"{total_time:.2f}s",
+                   source=source)
         
         # Prepare response metadata
         meta = {
@@ -532,7 +710,7 @@ def handler(event):
         }
         
     except Exception as e:
-        logger.error(f"Error processing job {job_id}: {str(e)}", exc_info=True)
+        logger.error(job_id, "Error processing job", error=str(e), exc_info=True)
         
         # Return error response
         error_type = "ModelError"
@@ -556,10 +734,14 @@ def handler(event):
 try:
     load_model()
 except Exception as e:
-    logger.error(f"Failed to load model at startup: {e}")
+    # Create a temporary logger instance for this error
+    temp_logger = StructuredLogger(__name__)
+    temp_logger.error("MODEL_INIT", "Failed to load model at startup", error=str(e))
     raise
 
 # Start the Runpod serverless handler
 if __name__ == "__main__":
-    logger.info("Starting Runpod serverless handler for Qwen-Image-Edit")
+    # Create a temporary logger instance for startup
+    temp_logger = StructuredLogger(__name__)
+    temp_logger.info("STARTUP", "Starting Runpod serverless handler for Qwen-Image-Edit")
     runpod.serverless.start({"handler": handler})
