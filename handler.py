@@ -151,44 +151,29 @@ def load_model():
             import torch
             
             # Log CUDA availability
-            if torch.cuda.is_available():
-                logger.info(job_id, "CUDA is available", device_count=torch.cuda.device_count())
-            else:
-                logger.info(job_id, "CUDA is not available, using CPU")
+            if not torch.cuda.is_available():
+                logger.error(job_id, "CUDA is not available. This application requires a GPU.")
+                raise RuntimeError("CUDA is not available. This application requires a GPU.")
             
-            # Try to load the Qwen model first
-            try:
-                model_load_start = time.time()
-                model = QwenImagePipeline.from_pretrained(
-                    "Qwen/Qwen-Image-Edit",
-                    torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-                    token=HF_TOKEN,
-                )
-                model_load_time = time.time() - model_load_start
-                logger.info(job_id, "Successfully loaded Qwen/Qwen-Image-Edit model", 
-                           load_time=f"{model_load_time:.2f}s",
-                           dtype=str(model.dtype))
-            except Exception as e:
-                logger.warning(job_id, "Failed to load Qwen/Qwen-Image-Edit model", error=str(e))
-                logger.info(job_id, "Falling back to timbrooks/instruct-pix2pix model")
-                # Fallback to the original InstructPix2Pix model
-                model_load_start = time.time()
-                model = QwenImagePipeline.from_pretrained(
-                    "timbrooks/instruct-pix2pix",
-                    torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-                    token=HF_TOKEN,
-                )
-                model_load_time = time.time() - model_load_start
-                logger.info(job_id, "Loaded timbrooks/instruct-pix2pix model", 
-                           load_time=f"{model_load_time:.2f}s",
-                           dtype=str(model.dtype))
+            logger.info(job_id, "CUDA is available", device_count=torch.cuda.device_count())
             
-            # Move to GPU if available
-            if torch.cuda.is_available():
-                move_start = time.time()
-                model = model.to("cuda")
-                move_time = time.time() - move_start
-                logger.info(job_id, "Moved model to CUDA", move_time=f"{move_time:.2f}s")
+            # Load the Qwen model
+            model_load_start = time.time()
+            model = QwenImagePipeline.from_pretrained(
+                "Qwen/Qwen-Image-Edit",
+                torch_dtype=torch.bfloat16,
+                token=HF_TOKEN,
+            )
+            model_load_time = time.time() - model_load_start
+            logger.info(job_id, "Successfully loaded Qwen/Qwen-Image-Edit model", 
+                       load_time=f"{model_load_time:.2f}s",
+                       dtype=str(model.dtype))
+            
+            # Move to GPU
+            move_start = time.time()
+            model = model.to("cuda")
+            move_time = time.time() - move_start
+            logger.info(job_id, "Moved model to CUDA", move_time=f"{move_time:.2f}s")
             
             # Use DPMSolverMultistepScheduler for better results
             scheduler_start = time.time()
@@ -203,49 +188,7 @@ def load_model():
             logger.info(job_id, "Model loaded successfully", total_load_time=f"{load_time:.2f}s")
         except Exception as e:
             logger.error(job_id, "Failed to load model", error=str(e))
-            # Fallback to CPU if CUDA is not available
-            try:
-                from diffusers import QwenImagePipeline
-                import torch
-                
-                # Try to load the Qwen model first
-                try:
-                    model_load_start = time.time()
-                    model = QwenImagePipeline.from_pretrained(
-                        "Qwen/Qwen-Image-Edit",
-                        torch_dtype=torch.float32,
-                        token=HF_TOKEN,
-                    )
-                    model_load_time = time.time() - model_load_start
-                    logger.info(job_id, "Successfully loaded Qwen/Qwen-Image-Edit model on CPU", 
-                               load_time=f"{model_load_time:.2f}s")
-                except Exception as e:
-                    logger.warning(job_id, "Failed to load Qwen/Qwen-Image-Edit model on CPU", error=str(e))
-                    logger.info(job_id, "Falling back to timbrooks/instruct-pix2pix model on CPU")
-                    # Fallback to the original InstructPix2Pix model
-                    model_load_start = time.time()
-                    model = QwenImagePipeline.from_pretrained(
-                        "timbrooks/instruct-pix2pix",
-                        torch_dtype=torch.float32,
-                        token=HF_TOKEN,
-                    )
-                    model_load_time = time.time() - model_load_start
-                    logger.info(job_id, "Loaded timbrooks/instruct-pix2pix model on CPU", 
-                               load_time=f"{model_load_time:.2f}s")
-                
-                scheduler_start = time.time()
-                model.scheduler = DPMSolverMultistepScheduler.from_config(model.scheduler.config)
-                scheduler_time = time.time() - scheduler_start
-                logger.info(job_id, "Scheduler configured on CPU", 
-                           scheduler_type="DPMSolverMultistep",
-                           config_time=f"{scheduler_time:.2f}s")
-                
-                model.eval()
-                load_time = time.time() - load_start
-                logger.info(job_id, "Model loaded on CPU successfully", total_load_time=f"{load_time:.2f}s")
-            except Exception as e2:
-                logger.error(job_id, "Failed to load model on CPU", error=str(e2))
-                raise
+            raise
     return model
 
 def sha256_hex(text: str) -> str:
