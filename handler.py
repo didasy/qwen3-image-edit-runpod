@@ -111,12 +111,12 @@ def load_model():
         logger.info("Loading Qwen-Image-Edit model...")
         try:
             # Import required modules
-            from diffusers import StableDiffusionInstructPix2PixPipeline, DPMSolverMultistepScheduler
+            from diffusers import QwenImagePipeline, DPMSolverMultistepScheduler
             import torch
             
             # Try to load the Qwen model first
             try:
-                model = StableDiffusionInstructPix2PixPipeline.from_pretrained(
+                model = QwenImagePipeline.from_pretrained(
                     "Qwen/Qwen-Image-Edit",
                     torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
                     token=HF_TOKEN,
@@ -126,7 +126,7 @@ def load_model():
                 logger.warning(f"Failed to load Qwen/Qwen-Image-Edit model: {e}")
                 logger.info("Falling back to timbrooks/instruct-pix2pix model")
                 # Fallback to the original InstructPix2Pix model
-                model = StableDiffusionInstructPix2PixPipeline.from_pretrained(
+                model = QwenImagePipeline.from_pretrained(
                     "timbrooks/instruct-pix2pix",
                     torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
                     token=HF_TOKEN,
@@ -145,12 +145,12 @@ def load_model():
             logger.error(f"Failed to load model: {e}")
             # Fallback to CPU if CUDA is not available
             try:
-                from diffusers import StableDiffusionInstructPix2PixPipeline
+                from diffusers import QwenImagePipeline
                 import torch
                 
                 # Try to load the Qwen model first
                 try:
-                    model = StableDiffusionInstructPix2PixPipeline.from_pretrained(
+                    model = QwenImagePipeline.from_pretrained(
                         "Qwen/Qwen-Image-Edit",
                         torch_dtype=torch.float32,
                         token=HF_TOKEN,
@@ -160,7 +160,7 @@ def load_model():
                     logger.warning(f"Failed to load Qwen/Qwen-Image-Edit model on CPU: {e}")
                     logger.info("Falling back to timbrooks/instruct-pix2pix model on CPU")
                     # Fallback to the original InstructPix2Pix model
-                    model = StableDiffusionInstructPix2PixPipeline.from_pretrained(
+                    model = QwenImagePipeline.from_pretrained(
                         "timbrooks/instruct-pix2pix",
                         torch_dtype=torch.float32,
                         token=HF_TOKEN,

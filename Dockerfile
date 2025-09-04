@@ -29,7 +29,7 @@ RUN pip install --no-cache-dir \
     huggingface-hub \
     hf-transfer \
     transformers \
-    diffusers \
+    diffusers==0.35.1 \
     accelerate \
     safetensors \
     timm \
@@ -50,7 +50,7 @@ RUN pip install --no-cache-dir \
 COPY handler.py .
 
 # Import smoke test
-RUN python -c "import runpod, transformers, diffusers, torch, PIL, minio, requests, pydantic; print('All imports successful')"
+RUN python -c "import runpod, transformers, diffusers, torch, PIL, minio, requests, pydantic; from diffusers import QwenImagePipeline; print('All imports successful')"
 
 # Set entrypoint
 CMD ["python", "-u", "handler.py"]
