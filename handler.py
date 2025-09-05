@@ -422,6 +422,31 @@ def run_qwen_edit(job_id: str, model, image: PILImage, prompt: str, **kwargs) ->
         except Exception as e:
             logger.warning(job_id, "Failed to clear CUDA cache", error=str(e))
         
+        # Handle the result properly - the model might return different types
+        logger.debug(job_id, "Model result type", result_type=type(result).__name__)
+        
+        # If result is a tuple (which might cause unpacking issues), handle it
+        if isinstance(result, tuple):
+            logger.debug(job_id, "Model returned tuple", tuple_length=len(result))
+            # Try to get the image from the first element that looks like an image
+            for item in result:
+                if hasattr(item, 'images') and item.images:
+                    result = item
+                    break
+                elif isinstance(item, list) and len(item) > 0:
+                    result = item
+                    break
+                elif hasattr(item, 'size'):  # PIL Image check
+                    result = item
+                    break
+            else:
+                # If we didn't break, use the first element
+                if len(result) > 0:
+                    result = result[0]
+                else:
+                    logger.warning(job_id, "Model returned empty tuple, using original image")
+                    return image
+        
         # Return the edited image
         if hasattr(result, 'images') and result.images:
             logger.info(job_id, "Model inference completed successfully", 
@@ -433,6 +458,11 @@ def run_qwen_edit(job_id: str, model, image: PILImage, prompt: str, **kwargs) ->
                        inference_time=f"{infer_time:.2f}s",
                        result_type="list")
             return result[0]
+        elif hasattr(result, 'size'):  # PIL Image check
+            logger.info(job_id, "Model inference completed successfully", 
+                       inference_time=f"{infer_time:.2f}s",
+                       result_type="pil_image")
+            return result
         else:
             # Fallback to original image if model didn't return an image
             logger.warning(job_id, "Model didn't return an edited image, returning original")
