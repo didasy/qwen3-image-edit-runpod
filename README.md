@@ -94,13 +94,11 @@ After deploying to Runpod, send a POST request to your endpoint with the followi
     "seed": 424242,
     "num_inference_steps": 40,
     "guidance_scale": 6.5,
-    "strength": 0.85,
     "scheduler": "DPMSolverMultistep",
     "output_format": "jpeg",
     "output_quality": 95,
-    "safety_filter": true,
     "extra": {
-      "keep_resolution": true
+      "true_cfg_scale": 4.0
     }
   }
 }
@@ -112,35 +110,43 @@ After deploying to Runpod, send a POST request to your endpoint with the followi
 |-----------|------|---------|-------------|
 | `num_inference_steps` | Integer | 30 | Number of denoising steps. Higher values generally produce better quality but take longer to process. Values between 20-50 are typically good for most use cases. |
 | `guidance_scale` | Float | 7.5 | How closely the model follows the prompt. Higher values (7-15) make the model follow the prompt more strictly, but may reduce creativity. Lower values (3-7) allow more creativity but may deviate from the prompt. |
-| `strength` | Float | 0.8 | Controls how much the image is changed. Values closer to 0 make minimal changes, while values closer to 1 allow for major changes. For subtle edits, try 0.3-0.6. For dramatic changes, try 0.7-0.9. |
+| `seed` | Integer | Random | Seed for random number generation. If not provided, or if set to a value <= 0, a random seed will be generated. This allows for reproducible results when a specific seed is provided. |
 | `output_format` | String | "png" | Output image format. Can be either "png" or "jpeg". PNG is lossless but typically larger, while JPEG is compressed and smaller but may have quality loss. |
 | `output_quality` | Integer | 95 | Quality of the output image when using JPEG format (1-100). Higher values produce better quality but larger files. Has no effect when using PNG format. |
 | `extra` | Object | {} | Additional configuration options that can be passed to the model. These are model-specific and may vary between different implementations. |
 
+Note: When a seed is not provided or is set to a value <= 0, the system will automatically generate a random seed for the generation process. This seed will be returned in the response metadata, allowing you to reproduce the same result by using that seed in a subsequent request.
+
 ### Extra Parameters
 
-The `extra` field accepts additional parameters that can be passed directly to the underlying model. For Qwen-Image-Edit (which is based on InstructPix2Pix architecture), you can include:
+The `extra` field accepts additional parameters that can be passed directly to the underlying model. For QwenImageEditPipeline, you can include:
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `image_guidance_scale` | Float | Controls how much the input image influences the editing process (separate from text prompt guidance). Default is typically 1.5. |
-| `num_images_per_prompt` | Integer | Number of images to generate per prompt. |
-| `eta` | Float | Parameter for DDIM sampling. |
-| `generator` | torch.Generator | Random number generator for reproducibility. |
-| `latents` | torch.Tensor | Pre-generated noisy latents. |
-| `output_type` | String | Type of output ("pil", "np", or "pt"). |
-| `return_dict` | Boolean | Whether to return a dictionary or tuple. |
-| `callback` | Callable | Callback function during inference. |
-| `callback_steps` | Integer | Frequency of callback execution. |
-| `keep_resolution` | Boolean | Whether to maintain the original image resolution. |
+| `true_cfg_scale` | Float | Enables true classifier-free guidance when > 1.0 (default: 1.0) |
+| `height` | Integer | Height of the output image (default: 1024) |
+| `width` | Integer | Width of the output image (default: 1024) |
+| `num_images_per_prompt` | Integer | Number of images to generate per prompt (default: 1) |
+| `sigmas` | List[Float] | Custom sigmas for the denoising process |
+| `generator` | torch.Generator | Random number generator for reproducibility |
+| `latents` | torch.Tensor | Pre-generated noisy latents |
+| `prompt_embeds` | torch.Tensor | Pre-generated text embeddings |
+| `negative_prompt_embeds` | torch.Tensor | Pre-generated negative text embeddings |
+| `output_type` | String | Type of output ("pil", "np", or "pt") |
+| `return_dict` | Boolean | Whether to return a dictionary or tuple |
+| `attention_kwargs` | Dict | Additional attention parameters |
+| `callback_on_step_end` | Callable | Callback function at the end of each denoising step |
+| `callback_on_step_end_tensor_inputs` | List[String] | Tensor inputs for the callback function |
+| `max_sequence_length` | Integer | Maximum sequence length for the prompt (default: 512) |
 
 Example usage:
 ```json
 {
   "extra": {
-    "image_guidance_scale": 1.8,
-    "keep_resolution": true,
-    "num_images_per_prompt": 2
+    "true_cfg_scale": 4.0,
+    "num_images_per_prompt": 2,
+    "height": 1024,
+    "width": 1024
   }
 }
 ```
@@ -187,7 +193,6 @@ For most use cases, `EulerAncestral` (default) or `DPMSolverMultistep` will give
       "seed": 12345,
       "num_inference_steps": 30,
       "guidance_scale": 7.5,
-      "strength": 0.8,
       "scheduler": "EulerAncestral",
       "runtime": {
         "latency_ms_total": 0,
@@ -239,7 +244,7 @@ To reduce GPU memory usage, this implementation includes several optimizations:
 
 ### Model Loading Optimizations
 - **Float16 Precision**: Uses `torch.float16` instead of `torch.bfloat16` to reduce memory consumption
-- **CPU Offloading**: Automatically offloads parts of the model to CPU when not in use
+- **Direct GPU Loading**: Loads the model directly to GPU for optimal performance
 - **Attention Slicing**: Enables attention slicing to reduce memory usage during computation
 - **Memory Efficient Attention**: Uses xformers when available for more efficient attention computation
 
@@ -250,7 +255,6 @@ To reduce GPU memory usage, this implementation includes several optimizations:
 
 ### Additional Techniques
 - **XFormers Integration**: Leverages xformers library for memory-efficient attention when available
-- **Gradient Checkpointing**: Reduces memory usage during computation by trading compute for memory
 
 These optimizations can reduce VRAM usage by 30-50% compared to the standard implementation, allowing the model to run on GPUs with as little as 16GB of VRAM while maintaining good performance.
 

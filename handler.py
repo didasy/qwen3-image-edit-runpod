@@ -110,11 +110,9 @@ class ImageEditInput(BaseModel):
     seed: Optional[int] = None
     num_inference_steps: int = 30
     guidance_scale: float = 7.5
-    strength: float = 0.8
     scheduler: str = "EulerAncestral"
     output_format: str = "png"
     output_quality: int = 95
-    safety_filter: bool = True
     extra: dict = {}
 
     @validator("image_url")
@@ -149,7 +147,7 @@ def load_model():
         
         try:
             # Import required modules
-            from diffusers import QwenImagePipeline, DPMSolverMultistepScheduler
+            from diffusers import QwenImageEditPipeline, DPMSolverMultistepScheduler
             import torch
             
             # Log CUDA availability
@@ -172,7 +170,7 @@ def load_model():
                 logger.warning(job_id, "xformers not available, using default attention")
             
             # Load model with optimizations
-            model = QwenImagePipeline.from_pretrained(
+            model = QwenImageEditPipeline.from_pretrained(
                 "Qwen/Qwen-Image-Edit",
                 torch_dtype=torch.float16,  # Use float16 instead of bfloat16 for lower memory usage
                 token=HF_TOKEN,
@@ -186,17 +184,11 @@ def load_model():
                 except Exception as e:
                     logger.warning(job_id, "Failed to enable xformers memory efficient attention", error=str(e))
             
-            # Enable model CPU offload for parts of the model
-            try:
-                model.enable_model_cpu_offload()
-                logger.info(job_id, "Enabled model CPU offload")
-            except Exception as e:
-                logger.warning(job_id, "Failed to enable model CPU offload", error=str(e))
-                # Fallback to regular GPU loading
-                move_start = time.time()
-                model = model.to("cuda")
-                move_time = time.time() - move_start
-                logger.info(job_id, "Moved model to CUDA", move_time=f"{move_time:.2f}s")
+            # Move model to GPU
+            move_start = time.time()
+            model = model.to("cuda")
+            move_time = time.time() - move_start
+            logger.info(job_id, "Moved model to CUDA", move_time=f"{move_time:.2f}s")
             
             # Enable attention slicing for additional memory savings
             try:
@@ -360,10 +352,7 @@ def run_qwen_edit(job_id: str, model, image: PILImage, prompt: str, **kwargs) ->
         seed = kwargs.get("seed", None)
         num_inference_steps = kwargs.get("num_inference_steps", 30)
         guidance_scale = kwargs.get("guidance_scale", 7.5)
-        image_guidance_scale = kwargs.get("image_guidance_scale", 1.5)
-        strength = kwargs.get("strength", 0.8)
         scheduler = kwargs.get("scheduler", "EulerAncestral")
-        safety_filter = kwargs.get("safety_filter", True)
         
         # Limit inference steps to reduce memory usage
         num_inference_steps = min(num_inference_steps, 50)  # Cap at 50 steps
@@ -419,8 +408,7 @@ def run_qwen_edit(job_id: str, model, image: PILImage, prompt: str, **kwargs) ->
             prompt=prompt,
             negative_prompt=negative_prompt,
             num_inference_steps=num_inference_steps,
-            guidance_scale=guidance_scale,
-            image_guidance_scale=image_guidance_scale,
+            true_cfg_scale=guidance_scale,  # Use true_cfg_scale for classifier-free guidance
             generator=generator,
         )
         infer_time = time.time() - infer_start
@@ -481,10 +469,12 @@ def warmup_model(job_id: str) -> dict:
         # Run a simple inference with minimal steps
         warmup_params = {
             "num_inference_steps": 1,
-            "guidance_scale": 7.5,
-            "image_guidance_scale": 1.5,
-            "strength": 0.8
+            "guidance_scale": 7.5
         }
+        
+        # Add a random seed for the warmup
+        import random
+        warmup_params["seed"] = random.randint(1, 2**32 - 1)
         
         logger.info(job_id, "Running warmup inference", **warmup_params)
         result_image = run_qwen_edit(
@@ -625,13 +615,19 @@ def handler(event):
         # Prepare parameters for the model
         model_params = {
             "negative_prompt": input_data.negative_prompt,
-            "seed": input_data.seed,
             "num_inference_steps": input_data.num_inference_steps,
             "guidance_scale": input_data.guidance_scale,
-            "strength": input_data.strength,
             "scheduler": input_data.scheduler,
-            "safety_filter": input_data.safety_filter,
         }
+        
+        # Handle seed parameter - generate random seed if not provided or invalid
+        if input_data.seed is None or input_data.seed <= 0:
+            import random
+            model_params["seed"] = random.randint(1, 2**32 - 1)
+            logger.info(job_id, "Generated random seed", seed=model_params["seed"])
+        else:
+            model_params["seed"] = input_data.seed
+            
         # Add extra parameters
         model_params.update(input_data.extra)
         
@@ -684,10 +680,9 @@ def handler(event):
             "model": "Qwen/Qwen-Image-Edit",
             "prompt": input_data.prompt,
             "negative_prompt": input_data.negative_prompt,
-            "seed": input_data.seed,
+            "seed": model_params["seed"],  # Use the actual seed used in generation
             "num_inference_steps": input_data.num_inference_steps,
             "guidance_scale": input_data.guidance_scale,
-            "strength": input_data.strength,
             "scheduler": input_data.scheduler,
             "runtime": {
                 "latency_ms_total": int(total_time * 1000),
