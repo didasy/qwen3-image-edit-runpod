@@ -83,22 +83,25 @@ After deploying to Runpod, send a POST request to your endpoint with the followi
 }
 ```
 
-### Full Request
+### Full Request with All Parameters
 
 ```json
 {
   "input": {
-    "image_url": "https://example.com/img.png",
-    "prompt": "remove background and place subject on a studio gray backdrop",
-    "negative_prompt": "low quality, artifacts",
-    "seed": 424242,
-    "num_inference_steps": 40,
-    "guidance_scale": 6.5,
-    "scheduler": "DPMSolverMultistep",
-    "output_format": "jpeg",
+    "image_url": "https://example.com/image.jpg",
+    "prompt": "Transform the image into an oil painting style with rich textures and vibrant colors",
+    "negative_prompt": "low quality, blurry, distorted, ugly, deformed",
+    "seed": 123456789,
+    "num_inference_steps": 30,
+    "guidance_scale": 7.5,
+    "scheduler": "EulerAncestral",
+    "output_format": "png",
     "output_quality": 95,
     "extra": {
-      "true_cfg_scale": 4.0
+      "true_cfg_scale": 3.0,
+      "height": 1024,
+      "width": 1024,
+      "num_images_per_prompt": 1
     }
   }
 }
@@ -108,14 +111,18 @@ After deploying to Runpod, send a POST request to your endpoint with the followi
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `num_inference_steps` | Integer | 30 | Number of denoising steps. Higher values generally produce better quality but take longer to process. Values between 20-50 are typically good for most use cases. |
-| `guidance_scale` | Float | 7.5 | How closely the model follows the prompt. Higher values (7-15) make the model follow the prompt more strictly, but may reduce creativity. Lower values (3-7) allow more creativity but may deviate from the prompt. |
-| `seed` | Integer | Random | Seed for random number generation. If not provided, or if set to a value <= 0, a random seed will be generated. This allows for reproducible results when a specific seed is provided. |
-| `output_format` | String | "png" | Output image format. Can be either "png" or "jpeg". PNG is lossless but typically larger, while JPEG is compressed and smaller but may have quality loss. |
-| `output_quality` | Integer | 95 | Quality of the output image when using JPEG format (1-100). Higher values produce better quality but larger files. Has no effect when using PNG format. |
-| `extra` | Object | {} | Additional configuration options that can be passed to the model. These are model-specific and may vary between different implementations. |
+| `image_url` | String (URL) | Required | Publicly accessible URL of the image to edit |
+| `prompt` | String | Required | Text description of the desired edit |
+| `negative_prompt` | String | "" | Text description of what to avoid in the edit |
+| `seed` | Integer | Random | Seed for reproducible results (random if not provided or ≤ 0) |
+| `num_inference_steps` | Integer | 30 | Number of denoising steps (1-50) |
+| `guidance_scale` | Float | 7.5 | How closely to follow the prompt (1.0-20.0) |
+| `scheduler` | String | "EulerAncestral" | Scheduler algorithm for denoising |
+| `output_format` | String | "png" | Output format ("png" or "jpeg") |
+| `output_quality` | Integer | 95 | JPEG quality (1-100, PNG ignores this) |
+| `extra` | Object | {} | Additional model parameters |
 
-Note: When a seed is not provided or is set to a value <= 0, the system will automatically generate a random seed for the generation process. This seed will be returned in the response metadata, allowing you to reproduce the same result by using that seed in a subsequent request.
+Note: When a seed is not provided or is set to a value ≤ 0, the system will automatically generate a random seed for the generation process. This seed will be returned in the response metadata, allowing you to reproduce the same result by using that seed in a subsequent request.
 
 ### Extra Parameters
 
@@ -124,8 +131,8 @@ The `extra` field accepts additional parameters that can be passed directly to t
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `true_cfg_scale` | Float | Enables true classifier-free guidance when > 1.0 (default: 1.0) |
-| `height` | Integer | Height of the output image (default: 1024) |
-| `width` | Integer | Width of the output image (default: 1024) |
+| `height` | Integer | Height of the output image (default: calculated from input) |
+| `width` | Integer | Width of the output image (default: calculated from input) |
 | `num_images_per_prompt` | Integer | Number of images to generate per prompt (default: 1) |
 | `sigmas` | List[Float] | Custom sigmas for the denoising process |
 | `generator` | torch.Generator | Random number generator for reproducibility |
@@ -139,14 +146,18 @@ The `extra` field accepts additional parameters that can be passed directly to t
 | `callback_on_step_end_tensor_inputs` | List[String] | Tensor inputs for the callback function |
 | `max_sequence_length` | Integer | Maximum sequence length for the prompt (default: 512) |
 
-Example usage:
+Example usage with extra parameters:
 ```json
 {
-  "extra": {
-    "true_cfg_scale": 4.0,
-    "num_images_per_prompt": 2,
-    "height": 1024,
-    "width": 1024
+  "input": {
+    "image_url": "https://example.com/image.jpg",
+    "prompt": "make the image look like a watercolor painting",
+    "extra": {
+      "true_cfg_scale": 4.0,
+      "num_images_per_prompt": 2,
+      "height": 768,
+      "width": 1024
+    }
   }
 }
 ```
@@ -192,6 +203,7 @@ For most use cases, `EulerAncestral` (default) or `DPMSolverMultistep` will give
       "negative_prompt": "",
       "seed": 12345,
       "num_inference_steps": 30,
+      "true_cfg_scale": 1.0,
       "guidance_scale": 7.5,
       "scheduler": "EulerAncestral",
       "runtime": {
@@ -246,15 +258,13 @@ To reduce GPU memory usage, this implementation includes several optimizations:
 - **Float16 Precision**: Uses `torch.float16` instead of `torch.bfloat16` to reduce memory consumption
 - **Direct GPU Loading**: Loads the model directly to GPU for optimal performance
 - **Attention Slicing**: Enables attention slicing to reduce memory usage during computation
-- **Memory Efficient Attention**: Uses xformers when available for more efficient attention computation
+- **VAE Slicing**: Enables VAE slicing for additional memory savings
+- **VAE Tiling**: Enables VAE tiling for processing larger images with limited memory
 
 ### Inference Optimizations
 - **Automatic Memory Cleanup**: Clears GPU cache after each inference operation
 - **Inference Step Limiting**: Caps inference steps at 50 to prevent excessive memory usage
 - **Attention Slicing**: Reduces memory consumption during the attention computation phase
-
-### Additional Techniques
-- **XFormers Integration**: Leverages xformers library for memory-efficient attention when available
 
 These optimizations can reduce VRAM usage by 30-50% compared to the standard implementation, allowing the model to run on GPUs with as little as 16GB of VRAM while maintaining good performance.
 

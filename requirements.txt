@@ -18,5 +18,4 @@ aiohttp>=3.8.0
 pydantic>=2.0.0
 python-dotenv>=1.0.0
 uvloop>=0.17.0
-xformers>=0.0.23
 opencv-python-headless>=4.8.0

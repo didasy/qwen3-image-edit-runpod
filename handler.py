@@ -160,29 +160,17 @@ def load_model():
             # Load the Qwen model with memory optimizations
             model_load_start = time.time()
             
-            # Enable memory efficient attention (xformers) if available
-            enable_xformers = False
-            try:
-                import xformers
-                enable_xformers = True
-                logger.info(job_id, "xformers available, will enable memory efficient attention")
-            except ImportError:
-                logger.warning(job_id, "xformers not available, using default attention")
+            # Load model with optimizations
+            model_load_start = time.time()
             
             # Load model with optimizations
+            logger.info(job_id, "Loading QwenImageEditPipeline from_pretrained")
             model = QwenImageEditPipeline.from_pretrained(
                 "Qwen/Qwen-Image-Edit",
                 torch_dtype=torch.float16,  # Use float16 instead of bfloat16 for lower memory usage
                 token=HF_TOKEN,
             )
-            
-            # Enable memory efficient attention if available
-            if enable_xformers:
-                try:
-                    model.enable_xformers_memory_efficient_attention()
-                    logger.info(job_id, "Enabled xformers memory efficient attention")
-                except Exception as e:
-                    logger.warning(job_id, "Failed to enable xformers memory efficient attention", error=str(e))
+            logger.info(job_id, "QwenImageEditPipeline loaded successfully")
             
             # Move model to GPU
             move_start = time.time()
@@ -197,11 +185,24 @@ def load_model():
             except Exception as e:
                 logger.warning(job_id, "Failed to enable attention slicing", error=str(e))
             
+            # Enable VAE slicing for additional memory savings
+            try:
+                model.enable_vae_slicing()
+                logger.info(job_id, "Enabled VAE slicing")
+            except Exception as e:
+                logger.warning(job_id, "Failed to enable VAE slicing", error=str(e))
+            
+            # Enable VAE tiling for processing larger images with limited memory
+            try:
+                model.enable_vae_tiling()
+                logger.info(job_id, "Enabled VAE tiling")
+            except Exception as e:
+                logger.warning(job_id, "Failed to enable VAE tiling", error=str(e))
+            
             model_load_time = time.time() - model_load_start
             logger.info(job_id, "Successfully loaded Qwen/Qwen-Image-Edit model", 
                        load_time=f"{model_load_time:.2f}s",
-                       dtype=str(model.dtype),
-                       xformers_enabled=enable_xformers)
+                       dtype=str(model.dtype))
             
             load_time = time.time() - load_start
             logger.info(job_id, "Model loaded successfully", total_load_time=f"{load_time:.2f}s")
@@ -346,15 +347,13 @@ def run_qwen_edit(job_id: str, model, image: PILImage, prompt: str, **kwargs) ->
     logger.info(job_id, "Running Qwen-Image-Edit", prompt=prompt)
     logger.debug(job_id, "Model parameters", **kwargs)
     
-    # Import required modules for tensor handling
-    import torchvision.transforms as T
-    
     try:
         # Extract parameters
         negative_prompt = kwargs.get("negative_prompt", "")
         seed = kwargs.get("seed", None)
         num_inference_steps = kwargs.get("num_inference_steps", 30)
-        guidance_scale = kwargs.get("guidance_scale", 7.5)
+        true_cfg_scale = kwargs.get("true_cfg_scale", 1.0)  # Use true_cfg_scale for classifier-free guidance
+        guidance_scale = kwargs.get("guidance_scale", 1.0)  # This is a different parameter
         scheduler = kwargs.get("scheduler", "EulerAncestral")
         
         # Limit inference steps to reduce memory usage
@@ -362,40 +361,45 @@ def run_qwen_edit(job_id: str, model, image: PILImage, prompt: str, **kwargs) ->
         
         # Set scheduler if specified
         scheduler_start = time.time()
-        if scheduler == "DPMSolverMultistep":
-            from diffusers import DPMSolverMultistepScheduler
-            model.scheduler = DPMSolverMultistepScheduler.from_config(model.scheduler.config)
-        elif scheduler == "DDIM":
-            from diffusers import DDIMScheduler
-            model.scheduler = DDIMScheduler.from_config(model.scheduler.config)
-        elif scheduler == "DDPM":
-            from diffusers import DDPMScheduler
-            model.scheduler = DDPMScheduler.from_config(model.scheduler.config)
-        elif scheduler == "PNDM":
-            from diffusers import PNDMScheduler
-            model.scheduler = PNDMScheduler.from_config(model.scheduler.config)
-        elif scheduler == "LMSDiscrete":
-            from diffusers import LMSDiscreteScheduler
-            model.scheduler = LMSDiscreteScheduler.from_config(model.scheduler.config)
-        elif scheduler == "HeunDiscrete":
-            from diffusers import HeunDiscreteScheduler
-            model.scheduler = HeunDiscreteScheduler.from_config(model.scheduler.config)
-        elif scheduler == "KDPM2Ancestral":
-            from diffusers import KDPM2AncestralDiscreteScheduler
-            model.scheduler = KDPM2AncestralDiscreteScheduler.from_config(model.scheduler.config)
-        elif scheduler == "KDPM2":
-            from diffusers import KDPM2DiscreteScheduler
-            model.scheduler = KDPM2DiscreteScheduler.from_config(model.scheduler.config)
-        elif scheduler == "DEISMultistep":
-            from diffusers import DEISMultistepScheduler
-            model.scheduler = DEISMultistepScheduler.from_config(model.scheduler.config)
-        elif scheduler == "UniPCMultistep":
-            from diffusers import UniPCMultistepScheduler
-            model.scheduler = UniPCMultistepScheduler.from_config(model.scheduler.config)
-        # EulerAncestral is the default scheduler
-        
-        scheduler_time = time.time() - scheduler_start
-        logger.debug(job_id, "Scheduler configured", scheduler=scheduler, config_time=f"{scheduler_time:.2f}s")
+        try:
+            if scheduler == "DPMSolverMultistep":
+                from diffusers import DPMSolverMultistepScheduler
+                model.scheduler = DPMSolverMultistepScheduler.from_config(model.scheduler.config)
+            elif scheduler == "DDIM":
+                from diffusers import DDIMScheduler
+                model.scheduler = DDIMScheduler.from_config(model.scheduler.config)
+            elif scheduler == "DDPM":
+                from diffusers import DDPMScheduler
+                model.scheduler = DDPMScheduler.from_config(model.scheduler.config)
+            elif scheduler == "PNDM":
+                from diffusers import PNDMScheduler
+                model.scheduler = PNDMScheduler.from_config(model.scheduler.config)
+            elif scheduler == "LMSDiscrete":
+                from diffusers import LMSDiscreteScheduler
+                model.scheduler = LMSDiscreteScheduler.from_config(model.scheduler.config)
+            elif scheduler == "HeunDiscrete":
+                from diffusers import HeunDiscreteScheduler
+                model.scheduler = HeunDiscreteScheduler.from_config(model.scheduler.config)
+            elif scheduler == "KDPM2Ancestral":
+                from diffusers import KDPM2AncestralDiscreteScheduler
+                model.scheduler = KDPM2AncestralDiscreteScheduler.from_config(model.scheduler.config)
+            elif scheduler == "KDPM2":
+                from diffusers import KDPM2DiscreteScheduler
+                model.scheduler = KDPM2DiscreteScheduler.from_config(model.scheduler.config)
+            elif scheduler == "DEISMultistep":
+                from diffusers import DEISMultistepScheduler
+                model.scheduler = DEISMultistepScheduler.from_config(model.scheduler.config)
+            elif scheduler == "UniPCMultistep":
+                from diffusers import UniPCMultistepScheduler
+                model.scheduler = UniPCMultistepScheduler.from_config(model.scheduler.config)
+            # EulerAncestral is the default scheduler
+            
+            scheduler_time = time.time() - scheduler_start
+            logger.debug(job_id, "Scheduler configured", scheduler=scheduler, config_time=f"{scheduler_time:.2f}s")
+        except Exception as scheduler_error:
+            logger.error(job_id, "Error configuring scheduler", scheduler=scheduler, error=str(scheduler_error))
+            # Continue with default scheduler if there's an error
+            pass
         
         # Set generator for reproducible results if seed is provided
         generator = None
@@ -406,15 +410,37 @@ def run_qwen_edit(job_id: str, model, image: PILImage, prompt: str, **kwargs) ->
         
         # Run the model
         infer_start = time.time()
-        result = model(
-            image=image,
-            prompt=prompt,
-            negative_prompt=negative_prompt,
-            num_inference_steps=num_inference_steps,
-            true_cfg_scale=guidance_scale,  # Use true_cfg_scale for classifier-free guidance
-            generator=generator,
-            return_dict=False,  # Ensure we get a tuple return for consistent handling
-        )
+        try:
+            logger.debug(job_id, "Calling model with parameters", 
+                        prompt=prompt, 
+                        negative_prompt=negative_prompt,
+                        num_inference_steps=num_inference_steps,
+                        true_cfg_scale=true_cfg_scale,
+                        guidance_scale=guidance_scale,
+                        generator_type=type(generator).__name__ if generator else "None",
+                        return_dict=True,  # Use return_dict=True to get QwenImagePipelineOutput
+                        image_type=type(image).__name__,
+                        image_mode=getattr(image, 'mode', 'N/A') if image else 'N/A')
+            
+            # Prepare the model call parameters
+            model_kwargs = {
+                "image": image,
+                "prompt": prompt,
+                "negative_prompt": negative_prompt,
+                "num_inference_steps": num_inference_steps,
+                "true_cfg_scale": true_cfg_scale,  # Use true_cfg_scale for classifier-free guidance
+                "guidance_scale": guidance_scale,  # Keep guidance_scale as a separate parameter
+                "generator": generator,
+                "return_dict": True,  # Use return_dict=True for consistent handling
+            }
+            
+            result = model(**model_kwargs)
+            
+            logger.debug(job_id, "Model call completed successfully")
+        except Exception as model_error:
+            logger.error(job_id, "Error calling model", error=str(model_error), exc_info=True)
+            raise ValueError(f"Failed to call model: {str(model_error)}")
+        
         infer_time = time.time() - infer_start
         
         # Clear GPU cache after inference to free up memory
@@ -426,55 +452,18 @@ def run_qwen_edit(job_id: str, model, image: PILImage, prompt: str, **kwargs) ->
         except Exception as e:
             logger.warning(job_id, "Failed to clear CUDA cache", error=str(e))
         
-        # Handle the result properly - the model should return a tuple when return_dict=False
+        # Handle the result - the model should return a QwenImagePipelineOutput when return_dict=True
         logger.debug(job_id, "Model result type", result_type=type(result).__name__)
         
-        # Check if result is a tuple and handle it correctly
-        if isinstance(result, tuple):
-            logger.debug(job_id, "Model returned tuple", tuple_length=len(result))
-            # For QwenImageEditPipeline with return_dict=False, first element should be the image tensor
-            if len(result) >= 1:
-                image_tensor = result[0]
-                # Convert tensor to PIL Image
-                if hasattr(image_tensor, 'shape'):
-                    # Handle the tensor appropriately
-                    # Assuming the tensor is in the format [B, C, H, W]
-                    if len(image_tensor.shape) == 4:
-                        # Get the first image from batch
-                        img_tensor = image_tensor[0]  # [C, H, W]
-                    else:
-                        img_tensor = image_tensor
-                    
-                    # Convert tensor to PIL Image
-                    import torchvision.transforms as T
-                    transform = T.ToPILImage()
-                    pil_result = transform(img_tensor)
-                    logger.info(job_id, "Model inference completed successfully", 
-                               inference_time=f"{infer_time:.2f}s",
-                               result_type="tensor_to_pil")
-                    return pil_result
-                else:
-                    raise ValueError(f"Unexpected result type in tuple: {type(image_tensor)}")
-            else:
-                raise ValueError("Model returned empty tuple")
-        elif hasattr(result, 'images') and result.images:
-            # Handle QwenImagePipelineOutput object
+        # According to the documentation, when return_dict=True, we get a QwenImagePipelineOutput
+        if hasattr(result, 'images') and result.images:
             logger.info(job_id, "Model inference completed successfully", 
                        inference_time=f"{infer_time:.2f}s",
-                       result_type="images_object")
+                       result_type="QwenImagePipelineOutput")
+            # Return the first image from the list
             return result.images[0]
-        elif isinstance(result, list) and len(result) > 0:
-            logger.info(job_id, "Model inference completed successfully", 
-                       inference_time=f"{infer_time:.2f}s",
-                       result_type="list")
-            return result[0]
-        elif hasattr(result, 'size'):  # PIL Image check
-            logger.info(job_id, "Model inference completed successfully", 
-                       inference_time=f"{infer_time:.2f}s",
-                       result_type="pil_image")
-            return result
         else:
-            raise ValueError(f"Model returned unexpected result type: {type(result)}")
+            raise ValueError(f"Model returned unexpected result: {type(result)}")
             
     except Exception as e:
         logger.error(job_id, "Error during model inference", error=str(e))
@@ -507,7 +496,8 @@ def warmup_model(job_id: str) -> dict:
         # Run a simple inference with minimal steps
         warmup_params = {
             "num_inference_steps": 1,
-            "guidance_scale": 7.5
+            "true_cfg_scale": 1.0,
+            "guidance_scale": 1.0
         }
         
         # Add a random seed for the warmup
@@ -515,6 +505,7 @@ def warmup_model(job_id: str) -> dict:
         warmup_params["seed"] = random.randint(1, 2**32 - 1)
         
         logger.info(job_id, "Running warmup inference", **warmup_params)
+        logger.debug(job_id, "Calling run_qwen_edit with warmup parameters")
         result_image = run_qwen_edit(
             job_id,
             model,
@@ -522,6 +513,7 @@ def warmup_model(job_id: str) -> dict:
             "warmup test",
             **warmup_params
         )
+        logger.debug(job_id, "Warmup inference completed successfully")
         
         # Clear cache after warmup
         try:
@@ -638,15 +630,19 @@ def handler(event):
         
         # Decode image
         decode_start = time.time()
-        image_stream = io.BytesIO(image_bytes)
-        pil_image = Image.open(image_stream).convert("RGB")
-        width, height = pil_image.size
-        decode_time = time.time() - decode_start
-        logger.info(job_id, "Image loaded", 
-                   width=width, 
-                   height=height, 
-                   mode=pil_image.mode,
-                   decode_time=f"{decode_time:.2f}s")
+        try:
+            image_stream = io.BytesIO(image_bytes)
+            pil_image = Image.open(image_stream).convert("RGB")
+            width, height = pil_image.size
+            decode_time = time.time() - decode_start
+            logger.info(job_id, "Image loaded", 
+                       width=width, 
+                       height=height, 
+                       mode=pil_image.mode,
+                       decode_time=f"{decode_time:.2f}s")
+        except Exception as decode_error:
+            logger.error(job_id, "Error decoding image", error=str(decode_error))
+            raise ValueError(f"Failed to decode image: {str(decode_error)}")
         
         # Run image editing
         logger.info(job_id, "Starting image editing")
@@ -654,6 +650,7 @@ def handler(event):
         model_params = {
             "negative_prompt": input_data.negative_prompt,
             "num_inference_steps": input_data.num_inference_steps,
+            "true_cfg_scale": 1.0,  # Default value for true_cfg_scale
             "guidance_scale": input_data.guidance_scale,
             "scheduler": input_data.scheduler,
         }
@@ -666,7 +663,7 @@ def handler(event):
         else:
             model_params["seed"] = input_data.seed
             
-        # Add extra parameters
+        # Add extra parameters (this allows users to override true_cfg_scale and other parameters)
         model_params.update(input_data.extra)
         
         try:
@@ -682,31 +679,39 @@ def handler(event):
             raise ValueError(f"Failed to edit image: {str(e)}")
         
         # Encode result
-        result_bytes, result_ext, result_content_type = encode_image(
-            job_id,
-            edited_image,
-            input_data.output_format,
-            input_data.output_quality
-        )
+        try:
+            result_bytes, result_ext, result_content_type = encode_image(
+                job_id,
+                edited_image,
+                input_data.output_format,
+                input_data.output_quality
+            )
+        except Exception as encode_error:
+            logger.error(job_id, "Error encoding result image", error=str(encode_error))
+            raise ValueError(f"Failed to encode result image: {str(encode_error)}")
         
         # Upload result
         upload_start = time.time()
-        result_key = f"{S3_OBJECT_PREFIX}results/{url_hash}/{job_id}.{result_ext}"
-        minio_client.put_object(
-            S3_BUCKET,
-            result_key,
-            io.BytesIO(result_bytes),
-            len(result_bytes),
-            content_type=result_content_type
-        )
-        
-        # Generate presigned URL
-        presigned_url = minio_client.presigned_get_object(
-            S3_BUCKET,
-            result_key,
-            expires=timedelta(seconds=PRESIGN_EXPIRY)
-        )
-        upload_time = time.time() - upload_start
+        try:
+            result_key = f"{S3_OBJECT_PREFIX}results/{url_hash}/{job_id}.{result_ext}"
+            minio_client.put_object(
+                S3_BUCKET,
+                result_key,
+                io.BytesIO(result_bytes),
+                len(result_bytes),
+                content_type=result_content_type
+            )
+            
+            # Generate presigned URL
+            presigned_url = minio_client.presigned_get_object(
+                S3_BUCKET,
+                result_key,
+                expires=timedelta(seconds=PRESIGN_EXPIRY)
+            )
+            upload_time = time.time() - upload_start
+        except Exception as upload_error:
+            logger.error(job_id, "Error uploading result", error=str(upload_error))
+            raise ValueError(f"Failed to upload result: {str(upload_error)}")
         
         # Calculate total time
         total_time = time.time() - start_time
@@ -724,6 +729,7 @@ def handler(event):
             "negative_prompt": input_data.negative_prompt,
             "seed": model_params["seed"],  # Use the actual seed used in generation
             "num_inference_steps": input_data.num_inference_steps,
+            "true_cfg_scale": model_params.get("true_cfg_scale", 1.0),
             "guidance_scale": input_data.guidance_scale,
             "scheduler": input_data.scheduler,
             "runtime": {
@@ -776,7 +782,9 @@ def handler(event):
 
 # Load model at cold start
 try:
+    logger.info("MODEL_INIT", "Starting model loading at cold start")
     load_model()
+    logger.info("MODEL_INIT", "Model loaded successfully at cold start")
 except Exception as e:
     # Create a temporary logger instance for this error
     temp_logger = StructuredLogger(__name__)

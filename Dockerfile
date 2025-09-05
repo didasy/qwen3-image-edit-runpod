@@ -43,14 +43,13 @@ RUN pip install --no-cache-dir \
     pydantic \
     python-dotenv \
     uvloop \
-    xformers \
     opencv-python-headless
 
 # Copy handler
 COPY handler.py .
 
 # Import smoke test
-RUN python -c "import runpod, transformers, diffusers, torch, PIL, minio, requests, pydantic; from diffusers import QwenImagePipeline; print('All imports successful')"
+RUN python -c "import runpod, transformers, diffusers, torch, PIL, minio, requests, pydantic; from diffusers import QwenImageEditPipeline; print('All imports successful')"
 
 # Set entrypoint
 CMD ["python", "-u", "handler.py"]
