@@ -22,6 +22,7 @@ from dotenv import load_dotenv
 # Import required modules
 from diffusers import QwenImageEditPipeline, DPMSolverMultistepScheduler
 from diffusers.utils import load_image
+from diffusers.models.attention_processor import AttnProcessor2_0
 
 # Load environment variables
 load_dotenv()
@@ -161,12 +162,13 @@ def load_model():
             move_time = time.time() - move_start
             logger.info(job_id, "Moved model to CUDA", move_time=f"{move_time:.2f}s")
             
-            # Enable attention slicing for additional memory savings
+            # Enable scaled dot product attention instead of attention slicing for better quality
             try:
-                model.enable_attention_slicing()
-                logger.info(job_id, "Enabled attention slicing")
+                model.transformer.set_attn_processor(AttnProcessor2_0())
+                logger.info(job_id, "Enabled scaled dot product attention with AttnProcessor2_0")
             except Exception as e:
-                logger.warning(job_id, "Failed to enable attention slicing", error=str(e))
+                logger.error(job_id, "Failed to enable scaled dot product attention", error=str(e))
+                raise RuntimeError(f"Failed to initialize scaled dot product attention: {str(e)}")
             
             # Enable VAE slicing for additional memory savings (more stable than tiling)
             try:
@@ -431,6 +433,7 @@ def run_qwen_edit(job_id: str, model, image: PILImage, prompt: str, **kwargs) ->
                 "guidance_scale": guidance_scale,  # Keep guidance_scale as a separate parameter
                 "generator": generator,
                 "return_dict": True,  # Use return_dict=True for consistent handling
+                "attention_kwargs": {"scale": 1.0}  # Add attention scaling parameter
             }
             
             result = model(**model_kwargs)
