@@ -349,23 +349,32 @@ def validate_and_clamp_image(job_id: str, pil_image: PILImage) -> PILImage:
     # Convert PIL image to numpy array for processing
     img_array = np.array(pil_image)
     
-    # Check for invalid values (NaN, Inf) and clamp them
-    if np.isnan(img_array).any() or np.isinf(img_array).any():
-        logger.warning(job_id, "Invalid values (NaN/Inf) found in image data, clamping to valid range")
-        # Replace NaN values with 0
-        img_array = np.nan_to_num(img_array, nan=0.0, posinf=255.0, neginf=0.0)
-        # Clamp values to valid range [0, 255]
-        img_array = np.clip(img_array, 0, 255)
-        # Convert back to uint8
-        img_array = img_array.astype(np.uint8)
-        # Convert back to PIL Image
-        pil_image = Image.fromarray(img_array, mode=pil_image.mode)
+    # Log statistics about the image values for debugging
+    logger.debug(job_id, "Image value range", 
+                min_val=float(np.min(img_array)), 
+                max_val=float(np.max(img_array)),
+                mean_val=float(np.mean(img_array)),
+                std_val=float(np.std(img_array)),
+                has_nan=bool(np.isnan(img_array).any()),
+                has_inf=bool(np.isinf(img_array).any()),
+                dtype=str(img_array.dtype),
+                shape=str(img_array.shape))
     
-    # Ensure values are in valid range even if no NaN/Inf were found
-    elif img_array.dtype != np.uint8:
-        # If not already uint8, convert with clamping
-        img_array = np.clip(img_array, 0, 255).astype(np.uint8)
-        pil_image = Image.fromarray(img_array, mode=pil_image.mode)
+    # Check if the image is all black or all white
+    if np.max(img_array) == 0:
+        logger.warning(job_id, "Image is completely black (all pixels are 0)")
+    elif np.min(img_array) == 255:
+        logger.warning(job_id, "Image is completely white (all pixels are 255)")
+    elif np.min(img_array) == np.max(img_array):
+        logger.warning(job_id, "Image has no variation (all pixels have the same value)", value=int(np.min(img_array)))
+    
+    # Always clamp values to valid range [0, 255] and convert to uint8
+    # This handles both invalid values (NaN/Inf) and valid values outside the range
+    img_array = np.nan_to_num(img_array, nan=0.0, posinf=255.0, neginf=0.0)
+    img_array = np.clip(img_array, 0, 255).astype(np.uint8)
+    
+    # Convert back to PIL Image
+    pil_image = Image.fromarray(img_array, mode=pil_image.mode)
     
     return pil_image
 
@@ -375,6 +384,10 @@ def run_qwen_edit(job_id: str, model, image: PILImage, prompt: str, **kwargs) ->
     logger.debug(job_id, "Model parameters", **kwargs)
     
     try:
+        # Validate and clamp input image to prevent issues during processing
+        logger.debug(job_id, "Validating input image")
+        image = validate_and_clamp_image(job_id, image)
+        
         # Extract parameters
         negative_prompt = kwargs.get("negative_prompt", "")
         seed = kwargs.get("seed", None)
@@ -385,6 +398,20 @@ def run_qwen_edit(job_id: str, model, image: PILImage, prompt: str, **kwargs) ->
         
         # Limit inference steps to reduce memory usage
         num_inference_steps = min(num_inference_steps, 50)  # Cap at 50 steps
+        
+        # Validate true_cfg_scale parameter
+        if true_cfg_scale < 1.0:
+            logger.warning(job_id, "true_cfg_scale should be >= 1.0, setting to default value", true_cfg_scale=true_cfg_scale)
+            true_cfg_scale = 1.0
+        elif true_cfg_scale > 10.0:
+            logger.warning(job_id, "true_cfg_scale is very high, this may cause issues", true_cfg_scale=true_cfg_scale)
+            
+        # Validate guidance_scale parameter
+        if guidance_scale < 1.0:
+            logger.warning(job_id, "guidance_scale should be >= 1.0, setting to default value", guidance_scale=guidance_scale)
+            guidance_scale = 1.0
+        elif guidance_scale > 20.0:
+            logger.warning(job_id, "guidance_scale is very high, this may cause issues", guidance_scale=guidance_scale)
         
         # Set scheduler if specified
         scheduler_start = time.time()
@@ -486,9 +513,15 @@ def run_qwen_edit(job_id: str, model, image: PILImage, prompt: str, **kwargs) ->
         if hasattr(result, 'images') and result.images:
             logger.info(job_id, "Model inference completed successfully", 
                        inference_time=f"{infer_time:.2f}s",
-                       result_type="QwenImagePipelineOutput")
+                       result_type="QwenImagePipelineOutput",
+                       num_images=len(result.images))
             # Get the first image from the list
             result_image = result.images[0]
+            
+            # Log information about the result image before processing
+            logger.debug(job_id, "Raw result image info", 
+                        mode=getattr(result_image, 'mode', 'N/A'),
+                        size=getattr(result_image, 'size', 'N/A') if hasattr(result_image, 'size') else 'N/A')
             
             # Validate and clamp image data to prevent invalid values
             result_image = validate_and_clamp_image(job_id, result_image)
@@ -511,96 +544,12 @@ def run_qwen_edit(job_id: str, model, image: PILImage, prompt: str, **kwargs) ->
         raise
 
 
-def warmup_model(job_id: str) -> dict:
-    """Warm up the model by running a simple inference"""
-    logger.info(job_id, "Starting model warmup")
-    warmup_start = time.time()
-    
-    try:
-        # Load model if not already loaded
-        model = load_model()
-        
-        # Create a simple test image (black 64x64 image)
-        import numpy as np
-        test_image_array = np.zeros((64, 64, 3), dtype=np.uint8)
-        test_image = Image.fromarray(test_image_array)
-        
-        # Run a simple inference with minimal steps
-        warmup_params = {
-            "num_inference_steps": 1,
-            "true_cfg_scale": 1.0,
-            "guidance_scale": 1.0
-        }
-        
-        # Add a random seed for the warmup
-        import random
-        warmup_params["seed"] = random.randint(1, 2**32 - 1)
-        
-        logger.info(job_id, "Running warmup inference", **warmup_params)
-        logger.debug(job_id, "Calling run_qwen_edit with warmup parameters")
-        result_image = run_qwen_edit(
-            job_id,
-            model,
-            test_image,
-            "warmup test",
-            **warmup_params
-        )
-        logger.debug(job_id, "Warmup inference completed successfully")
-        
-        # Validate and clamp the warmup result image as well
-        result_image = validate_and_clamp_image(job_id, result_image)
-        
-        # Clear cache after warmup
-        try:
-            import torch
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                logger.debug(job_id, "Cleared CUDA cache after warmup")
-        except Exception as e:
-            logger.warning(job_id, "Failed to clear CUDA cache after warmup", error=str(e))
-        
-        warmup_time = time.time() - warmup_start
-        logger.info(job_id, "Model warmup completed successfully", warmup_time=f"{warmup_time:.2f}s")
-        
-        return {
-            "status": "success",
-            "result": {
-                "message": "Model warmed up successfully",
-                "warmup_time": warmup_time
-            }
-        }
-    except Exception as e:
-        logger.error(job_id, "Error during model warmup", error=str(e), exc_info=True)
-        # Clear cache even on error
-        try:
-            import torch
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                logger.debug(job_id, "Cleared CUDA cache after warmup error")
-        except Exception as ce:
-            logger.warning(job_id, "Failed to clear CUDA cache after warmup error", error=str(ce))
-        return {
-            "status": "error",
-            "error": {
-                "type": "WarmupError",
-                "message": str(e),
-                "details": {
-                    "job_id": job_id
-                }
-            }
-        }
-
 def handler(event):
     """Main handler function for Runpod serverless"""
     start_time = time.time()
     job_id = event.get("id", str(uuid.uuid4()))
     
     logger.info(job_id, "Processing job")
-    
-    # Check if this is a warmup request
-    if event.get("input", {}).get("warmup", False):
-        logger.info(job_id, "Processing warmup request")
-        return warmup_model(job_id)
     
     try:
         # Parse and validate input
@@ -675,6 +624,9 @@ def handler(event):
                        height=height, 
                        mode=pil_image.mode,
                        decode_time=f"{decode_time:.2f}s")
+            
+            # Validate and clamp the loaded image
+            pil_image = validate_and_clamp_image(job_id, pil_image)
         except Exception as decode_error:
             logger.error(job_id, "Error decoding image", error=str(decode_error))
             raise ValueError(f"Failed to decode image: {str(decode_error)}")
@@ -700,6 +652,26 @@ def handler(event):
             
         # Add extra parameters (this allows users to override true_cfg_scale and other parameters)
         model_params.update(input_data.extra)
+        
+        # Validate extra parameters
+        if "true_cfg_scale" in model_params:
+            true_cfg_scale = model_params["true_cfg_scale"]
+            if true_cfg_scale < 1.0:
+                logger.warning(job_id, "true_cfg_scale in extra params should be >= 1.0, setting to default value", true_cfg_scale=true_cfg_scale)
+                model_params["true_cfg_scale"] = 1.0
+            elif true_cfg_scale > 10.0:
+                logger.warning(job_id, "true_cfg_scale in extra params is very high, this may cause issues", true_cfg_scale=true_cfg_scale)
+                
+        if "guidance_scale" in model_params:
+            guidance_scale = model_params["guidance_scale"]
+            if guidance_scale < 1.0:
+                logger.warning(job_id, "guidance_scale in extra params should be >= 1.0, setting to default value", guidance_scale=guidance_scale)
+                model_params["guidance_scale"] = 1.0
+            elif guidance_scale > 20.0:
+                logger.warning(job_id, "guidance_scale in extra params is very high, this may cause issues", guidance_scale=guidance_scale)
+        
+        # Log all model parameters for debugging
+        logger.debug(job_id, "Model parameters", **model_params)
         
         try:
             edited_image = run_qwen_edit(
