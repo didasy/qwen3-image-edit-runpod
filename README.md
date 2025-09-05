@@ -95,8 +95,6 @@ After deploying to Runpod, send a POST request to your endpoint with the followi
     "num_inference_steps": 30,
     "guidance_scale": 7.5,
     "scheduler": "EulerAncestral",
-    "output_format": "png",
-    "output_quality": 95,
     "extra": {
       "true_cfg_scale": 3.0,
       "height": 1024,
@@ -118,8 +116,6 @@ After deploying to Runpod, send a POST request to your endpoint with the followi
 | `num_inference_steps` | Integer | 30 | Number of denoising steps (1-50) |
 | `guidance_scale` | Float | 7.5 | How closely to follow the prompt (1.0-20.0) |
 | `scheduler` | String | "EulerAncestral" | Scheduler algorithm for denoising |
-| `output_format` | String | "png" | Output format ("png" or "jpeg") |
-| `output_quality` | Integer | 95 | JPEG quality (1-100, PNG ignores this) |
 | `extra` | Object | {} | Additional model parameters |
 
 Note: When a seed is not provided or is set to a value ≤ 0, the system will automatically generate a random seed for the generation process. This seed will be returned in the response metadata, allowing you to reproduce the same result by using that seed in a subsequent request.

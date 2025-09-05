@@ -111,8 +111,6 @@ class ImageEditInput(BaseModel):
     num_inference_steps: int = 30
     guidance_scale: float = 7.5
     scheduler: str = "EulerAncestral"
-    output_format: str = "png"
-    output_quality: int = 95
     extra: dict = {}
 
     @validator("image_url")
@@ -120,18 +118,6 @@ class ImageEditInput(BaseModel):
         parsed = urlparse(str(v))
         if parsed.scheme not in ["http", "https"]:
             raise ValueError("URL must be HTTP or HTTPS")
-        return v
-
-    @validator("output_format")
-    def validate_output_format(cls, v):
-        if v not in ["png", "jpeg"]:
-            raise ValueError("output_format must be 'png' or 'jpeg'")
-        return v
-
-    @validator("output_quality")
-    def validate_output_quality(cls, v):
-        if v < 1 or v > 100:
-            raise ValueError("output_quality must be between 1 and 100")
         return v
 
 # Global model variable
@@ -148,6 +134,7 @@ def load_model():
         try:
             # Import required modules
             from diffusers import QwenImageEditPipeline, DPMSolverMultistepScheduler
+            from diffusers.utils import load_image
             import torch
             
             # Log CUDA availability
@@ -342,41 +329,7 @@ def encode_image(job_id: str, image: PILImage, format: str, quality: int = 95) -
                encode_time=f"{encode_time:.2f}s")
     return image_bytes, extension, content_type
 
-def validate_and_clamp_image(job_id: str, pil_image: PILImage) -> PILImage:
-    """Validate and clamp image data to prevent invalid values that cause casting warnings"""
-    import numpy as np
-    
-    # Convert PIL image to numpy array for processing
-    img_array = np.array(pil_image)
-    
-    # Log statistics about the image values for debugging
-    logger.debug(job_id, "Image value range", 
-                min_val=float(np.min(img_array)), 
-                max_val=float(np.max(img_array)),
-                mean_val=float(np.mean(img_array)),
-                std_val=float(np.std(img_array)),
-                has_nan=bool(np.isnan(img_array).any()),
-                has_inf=bool(np.isinf(img_array).any()),
-                dtype=str(img_array.dtype),
-                shape=str(img_array.shape))
-    
-    # Check if the image is all black or all white
-    if np.max(img_array) == 0:
-        logger.warning(job_id, "Image is completely black (all pixels are 0)")
-    elif np.min(img_array) == 255:
-        logger.warning(job_id, "Image is completely white (all pixels are 255)")
-    elif np.min(img_array) == np.max(img_array):
-        logger.warning(job_id, "Image has no variation (all pixels have the same value)", value=int(np.min(img_array)))
-    
-    # Always clamp values to valid range [0, 255] and convert to uint8
-    # This handles both invalid values (NaN/Inf) and valid values outside the range
-    img_array = np.nan_to_num(img_array, nan=0.0, posinf=255.0, neginf=0.0)
-    img_array = np.clip(img_array, 0, 255).astype(np.uint8)
-    
-    # Convert back to PIL Image
-    pil_image = Image.fromarray(img_array, mode=pil_image.mode)
-    
-    return pil_image
+
 
 def run_qwen_edit(job_id: str, model, image: PILImage, prompt: str, **kwargs) -> PILImage:
     """Run Qwen-Image-Edit on the input image with VRAM optimizations"""
@@ -384,9 +337,6 @@ def run_qwen_edit(job_id: str, model, image: PILImage, prompt: str, **kwargs) ->
     logger.debug(job_id, "Model parameters", **kwargs)
     
     try:
-        # Validate and clamp input image to prevent issues during processing
-        logger.debug(job_id, "Validating input image")
-        image = validate_and_clamp_image(job_id, image)
         
         # Extract parameters
         negative_prompt = kwargs.get("negative_prompt", "")
@@ -523,9 +473,6 @@ def run_qwen_edit(job_id: str, model, image: PILImage, prompt: str, **kwargs) ->
                         mode=getattr(result_image, 'mode', 'N/A'),
                         size=getattr(result_image, 'size', 'N/A') if hasattr(result_image, 'size') else 'N/A')
             
-            # Validate and clamp image data to prevent invalid values
-            result_image = validate_and_clamp_image(job_id, result_image)
-            
             return result_image
         else:
             raise ValueError(f"Model returned unexpected result: {type(result)}")
@@ -569,67 +516,23 @@ def handler(event):
         infer_time = 0
         upload_time = 0
         
-        # Check cache or download image
-        cache_key = f"{S3_OBJECT_PREFIX}cache/{url_hash}"
-        image_bytes = None
-        extension = "png"
-        content_type = "image/png"
-        source = "cache"
-        
+        # Download image directly using diffusers.utils.load_image
+        logger.info(job_id, "Downloading image directly from URL")
+        download_start = time.time()
         try:
-            # Try to get from cache first
-            logger.info(job_id, "Checking cache", cache_key=cache_key)
-            response = minio_client.get_object(S3_BUCKET, cache_key + ".png")
-            image_bytes = response.read()
-            response.close()
-            response.release_conn()
-            extension = "png"
-            content_type = "image/png"
-            logger.info(job_id, "Image found in cache")
-        except S3Error as e:
-            if e.code == "NoSuchKey":
-                # Not in cache, download from URL
-                logger.info(job_id, "Image not in cache, downloading...")
-                source = "download"
-                download_start = time.time()
-                image_bytes, extension, content_type = download_image(job_id, str(input_data.image_url))
-                download_time = time.time() - download_start
-                
-                # Save to cache
-                cache_key_with_ext = f"{cache_key}.{extension}"
-                try:
-                    minio_client.put_object(
-                        S3_BUCKET,
-                        cache_key_with_ext,
-                        io.BytesIO(image_bytes),
-                        len(image_bytes),
-                        content_type=content_type
-                    )
-                    logger.info(job_id, "Cached image", cache_key=cache_key_with_ext)
-                except Exception as e:
-                    logger.warning(job_id, "Failed to cache image", error=str(e))
-            else:
-                logger.error(job_id, "Cache error", error=str(e))
-                raise ValueError(f"Cache error: {e}")
-        
-        # Decode image
-        decode_start = time.time()
-        try:
-            image_stream = io.BytesIO(image_bytes)
-            pil_image = Image.open(image_stream).convert("RGB")
+            pil_image = load_image(str(input_data.image_url)).convert("RGB")
             width, height = pil_image.size
-            decode_time = time.time() - decode_start
-            logger.info(job_id, "Image loaded", 
+            download_time = time.time() - download_start
+            logger.info(job_id, "Image downloaded successfully", 
                        width=width, 
                        height=height, 
                        mode=pil_image.mode,
-                       decode_time=f"{decode_time:.2f}s")
+                       download_time=f"{download_time:.2f}s")
             
-            # Validate and clamp the loaded image
-            pil_image = validate_and_clamp_image(job_id, pil_image)
-        except Exception as decode_error:
-            logger.error(job_id, "Error decoding image", error=str(decode_error))
-            raise ValueError(f"Failed to decode image: {str(decode_error)}")
+            
+        except Exception as download_error:
+            logger.error(job_id, "Error downloading image", error=str(download_error))
+            raise ValueError(f"Failed to download image: {str(download_error)}")
         
         # Run image editing
         logger.info(job_id, "Starting image editing")
@@ -685,17 +588,20 @@ def handler(event):
             logger.error(job_id, "Error during image editing", error=str(e))
             raise ValueError(f"Failed to edit image: {str(e)}")
         
-        # Encode result
+        # Save result as PNG temporarily
         try:
-            result_bytes, result_ext, result_content_type = encode_image(
-                job_id,
-                edited_image,
-                input_data.output_format,
-                input_data.output_quality
-            )
-        except Exception as encode_error:
-            logger.error(job_id, "Error encoding result image", error=str(encode_error))
-            raise ValueError(f"Failed to encode result image: {str(encode_error)}")
+            result_filename = f"{url_hash}.png"
+            edited_image.save(result_filename)
+            
+            # Read the saved PNG file
+            with open(result_filename, "rb") as f:
+                result_bytes = f.read()
+            
+            result_ext = "png"
+            result_content_type = "image/png"
+        except Exception as save_error:
+            logger.error(job_id, "Error saving result image", error=str(save_error))
+            raise ValueError(f"Failed to save result image: {str(save_error)}")
         
         # Upload result
         upload_start = time.time()
@@ -708,6 +614,13 @@ def handler(event):
                 len(result_bytes),
                 content_type=result_content_type
             )
+            
+            # Remove the temporary file
+            try:
+                os.remove(result_filename)
+                logger.debug(job_id, "Temporary file removed", filename=result_filename)
+            except Exception as remove_error:
+                logger.warning(job_id, "Failed to remove temporary file", error=str(remove_error))
             
             # Generate presigned URL
             presigned_url = minio_client.presigned_get_object(
