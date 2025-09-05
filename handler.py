@@ -112,8 +112,8 @@ class ImageEditInput(BaseModel):
     prompt: str
     negative_prompt: str = ""
     seed: Optional[int] = None
-    num_inference_steps: int = 30
-    guidance_scale: float = 7.5
+    num_inference_steps: int = 40  # Increased from 30 for better stability
+    guidance_scale: float = 5.0  # Reduced from 7.5 for better stability
     scheduler: str = "EulerAncestral"
     extra: dict = {}
 
@@ -147,9 +147,6 @@ def load_model():
             model_load_start = time.time()
             
             # Load model with optimizations
-            model_load_start = time.time()
-            
-            # Load model with optimizations
             logger.info(job_id, "Loading QwenImageEditPipeline from_pretrained")
             model = QwenImageEditPipeline.from_pretrained(
                 "Qwen/Qwen-Image-Edit",
@@ -171,19 +168,19 @@ def load_model():
             except Exception as e:
                 logger.warning(job_id, "Failed to enable attention slicing", error=str(e))
             
-            # Enable VAE slicing for additional memory savings
+            # Enable VAE slicing for additional memory savings (more stable than tiling)
             try:
                 model.enable_vae_slicing()
                 logger.info(job_id, "Enabled VAE slicing")
             except Exception as e:
                 logger.warning(job_id, "Failed to enable VAE slicing", error=str(e))
             
-            # Enable VAE tiling for processing larger images with limited memory
-            try:
-                model.enable_vae_tiling()
-                logger.info(job_id, "Enabled VAE tiling")
-            except Exception as e:
-                logger.warning(job_id, "Failed to enable VAE tiling", error=str(e))
+            # Only enable VAE tiling if we have memory issues, as it can cause instability
+            # try:
+            #     model.enable_vae_tiling()
+            #     logger.info(job_id, "Enabled VAE tiling")
+            # except Exception as e:
+            #     logger.warning(job_id, "Failed to enable VAE tiling", error=str(e))
             
             model_load_time = time.time() - model_load_start
             logger.info(job_id, "Successfully loaded Qwen/Qwen-Image-Edit model", 
@@ -244,10 +241,61 @@ def validate_content_type(content_type: str) -> bool:
     ]
     return content_type.lower() in allowed_types
 
+def validate_and_fix_image(job_id: str, image: PILImage) -> PILImage:
+    """Validate image for NaN/inf values and fix if possible"""
+    import numpy as np
+    
+    logger.debug(job_id, "Validating image for NaN/inf values")
+    
+    # Convert PIL image to numpy array for analysis
+    image_array = np.array(image)
+    
+    # Check for NaN or inf values
+    has_nan = np.isnan(image_array).any()
+    has_inf = np.isinf(image_array).any()
+    
+    if has_nan or has_inf:
+        logger.warning(job_id, "Invalid values found in image", 
+                      has_nan=has_nan, has_inf=has_inf)
+        
+        # Try to fix by clipping values to valid range
+        # Convert to float for processing if needed
+        if image_array.dtype != np.float32 and image_array.dtype != np.float64:
+            # If it's already uint8, convert to float in 0-1 range
+            if image_array.dtype == np.uint8:
+                image_array = image_array.astype(np.float32) / 255.0
+            else:
+                image_array = image_array.astype(np.float32)
+        
+        # Replace NaN with 0 and handle inf values
+        if has_nan:
+            image_array = np.nan_to_num(image_array, nan=0.0)
+        
+        if has_inf:
+            # Clip inf values to a reasonable range
+            image_array = np.clip(image_array, -10.0, 10.0)
+        
+        # Clip to valid range [0, 1] for image data
+        image_array = np.clip(image_array, 0.0, 1.0)
+        
+        # Convert back to PIL image
+        # Scale back to 0-255 range and convert to uint8
+        image_array = (image_array * 255).astype(np.uint8)
+        fixed_image = Image.fromarray(image_array, mode='RGB')
+        
+        logger.info(job_id, "Image fixed by clipping invalid values")
+        return fixed_image
+    else:
+        logger.debug(job_id, "Image validation passed - no invalid values found")
+        return image
+
 def encode_image(job_id: str, image: PILImage, format: str, quality: int = 95) -> Tuple[bytes, str, str]:
     """Encode PIL image to bytes with specified format"""
     logger.debug(job_id, "Encoding image", format=format, quality=quality, mode=image.mode)
     encode_start = time.time()
+    
+    # Validate and fix image if needed
+    image = validate_and_fix_image(job_id, image)
     
     buffer = io.BytesIO()
     
@@ -300,14 +348,14 @@ def run_qwen_edit(job_id: str, model, image: PILImage, prompt: str, **kwargs) ->
         if true_cfg_scale < 1.0:
             logger.warning(job_id, "true_cfg_scale should be >= 1.0, setting to default value", true_cfg_scale=true_cfg_scale)
             true_cfg_scale = 1.0
-        elif true_cfg_scale > 10.0:
+        elif true_cfg_scale > 5.0:  # Reduced from 10.0 for stability
             logger.warning(job_id, "true_cfg_scale is very high, this may cause issues", true_cfg_scale=true_cfg_scale)
             
         # Validate guidance_scale parameter
         if guidance_scale < 1.0:
             logger.warning(job_id, "guidance_scale should be >= 1.0, setting to default value", guidance_scale=guidance_scale)
-            guidance_scale = 1.0
-        elif guidance_scale > 20.0:
+            guidance_scale = 5.0  # Changed default to 5.0 for better stability
+        elif guidance_scale > 10.0:  # Reduced from 20.0 for stability
             logger.warning(job_id, "guidance_scale is very high, this may cause issues", guidance_scale=guidance_scale)
         
         # Set scheduler if specified
@@ -420,6 +468,30 @@ def run_qwen_edit(job_id: str, model, image: PILImage, prompt: str, **kwargs) ->
                         mode=getattr(result_image, 'mode', 'N/A'),
                         size=getattr(result_image, 'size', 'N/A') if hasattr(result_image, 'size') else 'N/A')
             
+            # Add debugging for image values to detect NaN/inf issues
+            try:
+                import numpy as np
+                # Convert to numpy array to check for invalid values
+                img_array = np.array(result_image)
+                has_nan = np.isnan(img_array).any()
+                has_inf = np.isinf(img_array).any()
+                min_val = np.min(img_array)
+                max_val = np.max(img_array)
+                
+                logger.debug(job_id, "Image value analysis",
+                            has_nan=has_nan,
+                            has_inf=has_inf,
+                            min_val=float(min_val),
+                            max_val=float(max_val),
+                            dtype=str(img_array.dtype))
+                
+                if has_nan or has_inf:
+                    logger.warning(job_id, "Invalid values detected in generated image",
+                                  has_nan=has_nan,
+                                  has_inf=has_inf)
+            except Exception as debug_error:
+                logger.warning(job_id, "Failed to analyze image values", error=str(debug_error))
+            
             return result_image
         else:
             raise ValueError(f"Model returned unexpected result: {type(result)}")
@@ -487,7 +559,7 @@ def handler(event):
         model_params = {
             "negative_prompt": input_data.negative_prompt,
             "num_inference_steps": input_data.num_inference_steps,
-            "true_cfg_scale": 1.0,  # Default value for true_cfg_scale
+            "true_cfg_scale": input_data.extra.get("true_cfg_scale", 1.5),  # Use from extra or default to 1.5
             "guidance_scale": input_data.guidance_scale,
             "scheduler": input_data.scheduler,
         }
@@ -538,7 +610,9 @@ def handler(event):
         # Save result as PNG temporarily
         try:
             result_filename = f"{url_hash}.png"
-            edited_image.save(result_filename)
+            # Validate and fix image before saving
+            validated_image = validate_and_fix_image(job_id, edited_image)
+            validated_image.save(result_filename)
             
             # Read the saved PNG file
             with open(result_filename, "rb") as f:
