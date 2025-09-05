@@ -584,8 +584,7 @@ def handler(event):
         total_time = time.time() - start_time
         
         logger.info(job_id, "Job completed successfully", 
-                   total_time=f"{total_time:.2f}s",
-                   source=source)
+                   total_time=f"{total_time:.2f}s")
         
         # Prepare response metadata
         meta = {
