@@ -161,20 +161,27 @@ def load_model():
             move_start = time.time()
             model = model.to("cuda")
 
-            # --- fix black images: run VAE in float32 ---
-            try:
-                model.vae.config.force_upcast = True  # avoid fp16 under/overflow in decoder
-            except Exception:
-                pass
-            model.vae.to(dtype=torch.float32)
-            try:
-                model.enable_vae_slicing()  # reduces VRAM spikes during decode
-            except Exception:
-                pass
-            # --- /fix ---
-
             move_time = time.time() - move_start
             logger.info(job_id, "Moved model to CUDA", move_time=f"{move_time:.2f}s")
+            
+            # --- fix black images: run VAE in float32 while keeping UNet in fp16 ---
+            try:
+                # Some VAEs underflow in fp16 -> near-black outputs; upcast decoder path
+                if hasattr(model, "vae") and hasattr(model.vae, "config"):
+                    model.vae.config.force_upcast = True
+            except Exception:
+                pass
+            try:
+                model.vae.to(dtype=torch.float32)
+                logger.info(job_id, "VAE upcast to float32 to prevent underflow")
+            except Exception as e:
+                logger.warning(job_id, "Failed to upcast VAE to float32", error=str(e))
+            try:
+                model.enable_vae_slicing()
+                logger.info(job_id, "Enabled VAE slicing")
+            except Exception as e:
+                logger.warning(job_id, "Failed to enable VAE slicing", error=str(e))
+            # --- /fix ---
             
             # Enable VAE slicing for additional memory savings (more stable than tiling)
             # try:
