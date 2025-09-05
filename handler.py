@@ -342,6 +342,33 @@ def encode_image(job_id: str, image: PILImage, format: str, quality: int = 95) -
                encode_time=f"{encode_time:.2f}s")
     return image_bytes, extension, content_type
 
+def validate_and_clamp_image(job_id: str, pil_image: PILImage) -> PILImage:
+    """Validate and clamp image data to prevent invalid values that cause casting warnings"""
+    import numpy as np
+    
+    # Convert PIL image to numpy array for processing
+    img_array = np.array(pil_image)
+    
+    # Check for invalid values (NaN, Inf) and clamp them
+    if np.isnan(img_array).any() or np.isinf(img_array).any():
+        logger.warning(job_id, "Invalid values (NaN/Inf) found in image data, clamping to valid range")
+        # Replace NaN values with 0
+        img_array = np.nan_to_num(img_array, nan=0.0, posinf=255.0, neginf=0.0)
+        # Clamp values to valid range [0, 255]
+        img_array = np.clip(img_array, 0, 255)
+        # Convert back to uint8
+        img_array = img_array.astype(np.uint8)
+        # Convert back to PIL Image
+        pil_image = Image.fromarray(img_array, mode=pil_image.mode)
+    
+    # Ensure values are in valid range even if no NaN/Inf were found
+    elif img_array.dtype != np.uint8:
+        # If not already uint8, convert with clamping
+        img_array = np.clip(img_array, 0, 255).astype(np.uint8)
+        pil_image = Image.fromarray(img_array, mode=pil_image.mode)
+    
+    return pil_image
+
 def run_qwen_edit(job_id: str, model, image: PILImage, prompt: str, **kwargs) -> PILImage:
     """Run Qwen-Image-Edit on the input image with VRAM optimizations"""
     logger.info(job_id, "Running Qwen-Image-Edit", prompt=prompt)
@@ -460,8 +487,13 @@ def run_qwen_edit(job_id: str, model, image: PILImage, prompt: str, **kwargs) ->
             logger.info(job_id, "Model inference completed successfully", 
                        inference_time=f"{infer_time:.2f}s",
                        result_type="QwenImagePipelineOutput")
-            # Return the first image from the list
-            return result.images[0]
+            # Get the first image from the list
+            result_image = result.images[0]
+            
+            # Validate and clamp image data to prevent invalid values
+            result_image = validate_and_clamp_image(job_id, result_image)
+            
+            return result_image
         else:
             raise ValueError(f"Model returned unexpected result: {type(result)}")
             
@@ -514,6 +546,9 @@ def warmup_model(job_id: str) -> dict:
             **warmup_params
         )
         logger.debug(job_id, "Warmup inference completed successfully")
+        
+        # Validate and clamp the warmup result image as well
+        result_image = validate_and_clamp_image(job_id, result_image)
         
         # Clear cache after warmup
         try:
