@@ -36,6 +36,8 @@ class StructuredLogger:
             )
             handler.setFormatter(formatter)
             self.logger.addHandler(handler)
+            # Prevent propagation to root logger to avoid duplicate logs
+            self.logger.propagate = False
     
     def _format_message(self, job_id: str, message: str, **kwargs) -> str:
         """Format log message with job ID and additional context"""
@@ -217,7 +219,6 @@ def load_model():
                        scheduler_type="DPMSolverMultistep",
                        config_time=f"{scheduler_time:.2f}s")
             
-            model.eval()
             load_time = time.time() - load_start
             logger.info(job_id, "Model loaded successfully", total_load_time=f"{load_time:.2f}s")
         except Exception as e:
