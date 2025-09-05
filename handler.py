@@ -164,11 +164,11 @@ def load_model():
             
             
             # Enable VAE slicing for additional memory savings (more stable than tiling)
-            try:
-                model.enable_vae_slicing()
-                logger.info(job_id, "Enabled VAE slicing")
-            except Exception as e:
-                logger.warning(job_id, "Failed to enable VAE slicing", error=str(e))
+            # try:
+            #     model.enable_vae_slicing()
+            #     logger.info(job_id, "Enabled VAE slicing")
+            # except Exception as e:
+            #     logger.warning(job_id, "Failed to enable VAE slicing", error=str(e))
             
             # Only enable VAE tiling if we have memory issues, as it can cause instability
             # try:
