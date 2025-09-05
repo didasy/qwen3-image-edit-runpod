@@ -149,6 +149,7 @@ To reduce GPU memory usage, the implementation includes:
 - Memory efficient attention with xformers
 - Automatic memory cleanup after inference
 - Inference step limiting (capped at 50 steps)
+- Scaled dot-product attention for more efficient attention computations
 
 These optimizations can reduce VRAM usage by 30-50%, allowing the model to run on GPUs with as little as 16GB of VRAM.
 

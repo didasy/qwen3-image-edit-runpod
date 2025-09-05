@@ -253,6 +253,7 @@ To reduce GPU memory usage, this implementation includes several optimizations:
 - **Direct GPU Loading**: Loads the model directly to GPU for optimal performance
 - **VAE Slicing**: Enables VAE slicing for additional memory savings
 - **VAE Tiling**: Enables VAE tiling for processing larger images with limited memory
+- **Scaled Dot-Product Attention**: Uses PyTorch's efficient scaled dot-product attention implementation for faster and more memory-efficient attention computations
 
 ### Inference Optimizations
 - **Automatic Memory Cleanup**: Clears GPU cache after each inference operation

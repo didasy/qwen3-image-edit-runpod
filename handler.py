@@ -19,9 +19,9 @@ from minio.error import S3Error
 import runpod
 from dotenv import load_dotenv
 
-# Import required modules
 from diffusers import QwenImageEditPipeline, DPMSolverMultistepScheduler
 from diffusers.utils import load_image
+from diffusers.models.attention_dispatch import attention_backend, AttentionBackendName
 
 # Load environment variables
 load_dotenv()
@@ -148,11 +148,13 @@ def load_model():
             
             # Load model with optimizations
             logger.info(job_id, "Loading QwenImageEditPipeline from_pretrained")
-            model = QwenImageEditPipeline.from_pretrained(
-                "Qwen/Qwen-Image-Edit",
-                torch_dtype=torch.float16,  # Use float16 instead of bfloat16 for lower memory usage
-                token=HF_TOKEN,
-            )
+            # Use scaled dot-product attention during model loading
+            with attention_backend(AttentionBackendName.NATIVE):
+                model = QwenImageEditPipeline.from_pretrained(
+                    "Qwen/Qwen-Image-Edit",
+                    torch_dtype=torch.float16,  # Use float16 instead of bfloat16 for lower memory usage
+                    token=HF_TOKEN,
+                )
             logger.info(job_id, "QwenImageEditPipeline loaded successfully")
             
             # Move model to GPU
@@ -160,8 +162,6 @@ def load_model():
             model = model.to("cuda")
             move_time = time.time() - move_start
             logger.info(job_id, "Moved model to CUDA", move_time=f"{move_time:.2f}s")
-            
-            
             
             # Enable VAE slicing for additional memory savings (more stable than tiling)
             # try:
@@ -259,7 +259,7 @@ def encode_image(job_id: str, image: PILImage, format: str, quality: int = 95) -
 
 
 def run_qwen_edit(job_id: str, model, image: PILImage, prompt: str, **kwargs) -> PILImage:
-    """Run Qwen-Image-Edit on the input image with VRAM optimizations"""
+    """Run Qwen-Image-Edit on the input image with VRAM optimizations and scaled dot-product attention"""
     logger.info(job_id, "Running Qwen-Image-Edit", prompt=prompt)
     logger.debug(job_id, "Model parameters", **kwargs)
     
@@ -339,7 +339,7 @@ def run_qwen_edit(job_id: str, model, image: PILImage, prompt: str, **kwargs) ->
             generator = torch.Generator(device=model.device).manual_seed(seed)
             logger.debug(job_id, "Generator set with seed", seed=seed)
         
-        # Run the model
+        # Run the model with scaled dot-product attention
         infer_start = time.time()
         try:
             logger.debug(job_id, "Calling model with parameters", 
@@ -365,7 +365,9 @@ def run_qwen_edit(job_id: str, model, image: PILImage, prompt: str, **kwargs) ->
                 "return_dict": True,  # Use return_dict=True for consistent handling
             }
             
-            result = model(**model_kwargs)
+            # Use scaled dot-product attention for the model inference
+            with attention_backend(AttentionBackendName.NATIVE):
+                result = model(**model_kwargs)
             
             logger.debug(job_id, "Model call completed successfully")
         except Exception as model_error:
@@ -480,7 +482,6 @@ def handler(event):
                        mode=pil_image.mode,
                        download_time=f"{download_time:.2f}s")
             
-            
         except Exception as download_error:
             logger.error(job_id, "Error downloading image", error=str(download_error))
             raise ValueError(f"Failed to download image: {str(download_error)}")
@@ -528,13 +529,15 @@ def handler(event):
         logger.debug(job_id, "Model parameters", **model_params)
         
         try:
-            edited_image = run_qwen_edit(
-                job_id,
-                model,
-                pil_image,
-                input_data.prompt,
-                **model_params
-            )
+            # Use scaled dot-product attention for the entire inference process
+            with attention_backend(AttentionBackendName.NATIVE):
+                edited_image = run_qwen_edit(
+                    job_id,
+                    model,
+                    pil_image,
+                    input_data.prompt,
+                    **model_params
+                )
         except Exception as e:
             logger.error(job_id, "Error during image editing", error=str(e))
             raise ValueError(f"Failed to edit image: {str(e)}")
