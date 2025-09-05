@@ -211,14 +211,6 @@ def load_model():
                        dtype=str(model.dtype),
                        xformers_enabled=enable_xformers)
             
-            # Use DPMSolverMultistepScheduler for better results
-            scheduler_start = time.time()
-            model.scheduler = DPMSolverMultistepScheduler.from_config(model.scheduler.config)
-            scheduler_time = time.time() - scheduler_start
-            logger.info(job_id, "Scheduler configured", 
-                       scheduler_type="DPMSolverMultistep",
-                       config_time=f"{scheduler_time:.2f}s")
-            
             load_time = time.time() - load_start
             logger.info(job_id, "Model loaded successfully", total_load_time=f"{load_time:.2f}s")
         except Exception as e:
@@ -423,8 +415,8 @@ def run_qwen_edit(job_id: str, model, image: PILImage, prompt: str, **kwargs) ->
         # Run the model
         infer_start = time.time()
         result = model(
-            prompt,
             image=image,
+            prompt=prompt,
             negative_prompt=negative_prompt,
             num_inference_steps=num_inference_steps,
             guidance_scale=guidance_scale,
