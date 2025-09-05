@@ -160,6 +160,19 @@ def load_model():
             # Move model to GPU
             move_start = time.time()
             model = model.to("cuda")
+
+            # --- fix black images: run VAE in float32 ---
+            try:
+                model.vae.config.force_upcast = True  # avoid fp16 under/overflow in decoder
+            except Exception:
+                pass
+            model.vae.to(dtype=torch.float32)
+            try:
+                model.enable_vae_slicing()  # reduces VRAM spikes during decode
+            except Exception:
+                pass
+            # --- /fix ---
+
             move_time = time.time() - move_start
             logger.info(job_id, "Moved model to CUDA", move_time=f"{move_time:.2f}s")
             
@@ -363,6 +376,7 @@ def run_qwen_edit(job_id: str, model, image: PILImage, prompt: str, **kwargs) ->
                 "guidance_scale": guidance_scale,  # Keep guidance_scale as a separate parameter
                 "generator": generator,
                 "return_dict": True,  # Use return_dict=True for consistent handling
+                "output_type": "pil",
             }
             
             # Use scaled dot-product attention for the model inference
@@ -544,6 +558,9 @@ def handler(event):
         
         # Save result as PNG temporarily
         try:
+            if edited_image.mode not in ("RGB", "L"):
+                edited_image = edited_image.convert("RGB")
+
             result_filename = f"{url_hash}.png"
             edited_image.save(result_filename)
             
