@@ -346,6 +346,9 @@ def run_qwen_edit(job_id: str, model, image: PILImage, prompt: str, **kwargs) ->
     logger.info(job_id, "Running Qwen-Image-Edit", prompt=prompt)
     logger.debug(job_id, "Model parameters", **kwargs)
     
+    # Import required modules for tensor handling
+    import torchvision.transforms as T
+    
     try:
         # Extract parameters
         negative_prompt = kwargs.get("negative_prompt", "")
@@ -410,6 +413,7 @@ def run_qwen_edit(job_id: str, model, image: PILImage, prompt: str, **kwargs) ->
             num_inference_steps=num_inference_steps,
             true_cfg_scale=guidance_scale,  # Use true_cfg_scale for classifier-free guidance
             generator=generator,
+            return_dict=False,  # Ensure we get a tuple return for consistent handling
         )
         infer_time = time.time() - infer_start
         
@@ -422,33 +426,39 @@ def run_qwen_edit(job_id: str, model, image: PILImage, prompt: str, **kwargs) ->
         except Exception as e:
             logger.warning(job_id, "Failed to clear CUDA cache", error=str(e))
         
-        # Handle the result properly - the model might return different types
+        # Handle the result properly - the model should return a tuple when return_dict=False
         logger.debug(job_id, "Model result type", result_type=type(result).__name__)
         
-        # If result is a tuple (which might cause unpacking issues), handle it
+        # Check if result is a tuple and handle it correctly
         if isinstance(result, tuple):
             logger.debug(job_id, "Model returned tuple", tuple_length=len(result))
-            # Try to get the image from the first element that looks like an image
-            for item in result:
-                if hasattr(item, 'images') and item.images:
-                    result = item
-                    break
-                elif isinstance(item, list) and len(item) > 0:
-                    result = item
-                    break
-                elif hasattr(item, 'size'):  # PIL Image check
-                    result = item
-                    break
-            else:
-                # If we didn't break, use the first element
-                if len(result) > 0:
-                    result = result[0]
+            # For QwenImageEditPipeline with return_dict=False, first element should be the image tensor
+            if len(result) >= 1:
+                image_tensor = result[0]
+                # Convert tensor to PIL Image
+                if hasattr(image_tensor, 'shape'):
+                    # Handle the tensor appropriately
+                    # Assuming the tensor is in the format [B, C, H, W]
+                    if len(image_tensor.shape) == 4:
+                        # Get the first image from batch
+                        img_tensor = image_tensor[0]  # [C, H, W]
+                    else:
+                        img_tensor = image_tensor
+                    
+                    # Convert tensor to PIL Image
+                    import torchvision.transforms as T
+                    transform = T.ToPILImage()
+                    pil_result = transform(img_tensor)
+                    logger.info(job_id, "Model inference completed successfully", 
+                               inference_time=f"{infer_time:.2f}s",
+                               result_type="tensor_to_pil")
+                    return pil_result
                 else:
-                    logger.warning(job_id, "Model returned empty tuple, using original image")
-                    return image
-        
-        # Return the edited image
-        if hasattr(result, 'images') and result.images:
+                    raise ValueError(f"Unexpected result type in tuple: {type(image_tensor)}")
+            else:
+                raise ValueError("Model returned empty tuple")
+        elif hasattr(result, 'images') and result.images:
+            # Handle QwenImagePipelineOutput object
             logger.info(job_id, "Model inference completed successfully", 
                        inference_time=f"{infer_time:.2f}s",
                        result_type="images_object")
@@ -464,9 +474,7 @@ def run_qwen_edit(job_id: str, model, image: PILImage, prompt: str, **kwargs) ->
                        result_type="pil_image")
             return result
         else:
-            # Fallback to original image if model didn't return an image
-            logger.warning(job_id, "Model didn't return an edited image, returning original")
-            return image
+            raise ValueError(f"Model returned unexpected result type: {type(result)}")
             
     except Exception as e:
         logger.error(job_id, "Error during model inference", error=str(e))
@@ -478,8 +486,8 @@ def run_qwen_edit(job_id: str, model, image: PILImage, prompt: str, **kwargs) ->
                 logger.debug(job_id, "Cleared CUDA cache after inference error")
         except Exception as ce:
             logger.warning(job_id, "Failed to clear CUDA cache after error", error=str(ce))
-        # Return original image if there's an error
-        return image
+        # Raise the error instead of returning the original image
+        raise
 
 
 def warmup_model(job_id: str) -> dict:
@@ -661,13 +669,17 @@ def handler(event):
         # Add extra parameters
         model_params.update(input_data.extra)
         
-        edited_image = run_qwen_edit(
-            job_id,
-            model,
-            pil_image,
-            input_data.prompt,
-            **model_params
-        )
+        try:
+            edited_image = run_qwen_edit(
+                job_id,
+                model,
+                pil_image,
+                input_data.prompt,
+                **model_params
+            )
+        except Exception as e:
+            logger.error(job_id, "Error during image editing", error=str(e))
+            raise ValueError(f"Failed to edit image: {str(e)}")
         
         # Encode result
         result_bytes, result_ext, result_content_type = encode_image(
