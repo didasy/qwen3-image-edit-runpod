@@ -19,6 +19,10 @@ from minio.error import S3Error
 import runpod
 from dotenv import load_dotenv
 
+# Import required modules
+from diffusers import QwenImageEditPipeline, DPMSolverMultistepScheduler
+from diffusers.utils import load_image
+
 # Load environment variables
 load_dotenv()
 
@@ -131,12 +135,7 @@ def load_model():
         logger.info(job_id, "Loading Qwen-Image-Edit model with VRAM optimizations...")
         load_start = time.time()
         
-        try:
-            # Import required modules
-            from diffusers import QwenImageEditPipeline, DPMSolverMultistepScheduler
-            from diffusers.utils import load_image
-            import torch
-            
+        try:            
             # Log CUDA availability
             if not torch.cuda.is_available():
                 logger.error(job_id, "CUDA is not available. This application requires a GPU.")
@@ -244,58 +243,6 @@ def validate_content_type(content_type: str) -> bool:
         "image/tiff"
     ]
     return content_type.lower() in allowed_types
-
-def download_image(job_id: str, url: str) -> Tuple[bytes, str, str]:
-    """Download image from URL with validation"""
-    logger.info(job_id, "Starting image download", url=url)
-    download_start = time.time()
-    
-    # Validate URL scheme
-    parsed = urlparse(url)
-    if parsed.scheme not in ["http", "https"]:
-        raise ValueError("Invalid URL scheme. Only HTTP and HTTPS are supported.")
-    
-    try:
-        # Stream download with timeout and size limits
-        response = requests.get(
-            url,
-            stream=True,
-            timeout=(5, 30),  # 5s connect, 30s read
-            headers={"User-Agent": "Qwen-Image-Edit-Runpod/1.0"}
-        )
-        response.raise_for_status()
-        
-        # Check content type
-        content_type = response.headers.get("Content-Type", "").split(";")[0].strip()
-        if not validate_content_type(content_type):
-            raise ValueError(f"Unsupported content type: {content_type}")
-        
-        # Check content length
-        content_length = response.headers.get("Content-Length")
-        if content_length and int(content_length) > MAX_IMAGE_BYTES:
-            raise ValueError(f"Image too large: {content_length} bytes")
-        
-        # Download image data
-        image_bytes = b""
-        for chunk in response.iter_content(chunk_size=8192):
-            image_bytes += chunk
-            if len(image_bytes) > MAX_IMAGE_BYTES:
-                raise ValueError(f"Image exceeded maximum size of {MAX_IMAGE_BYTES} bytes")
-        
-        # Determine extension
-        extension = get_image_extension(content_type, url)
-        
-        download_time = time.time() - download_start
-        logger.info(job_id, "Image downloaded successfully", 
-                   bytes=len(image_bytes), 
-                   content_type=content_type, 
-                   extension=extension,
-                   download_time=f"{download_time:.2f}s")
-        return image_bytes, extension, content_type
-        
-    except requests.exceptions.RequestException as e:
-        logger.error(job_id, "Failed to download image", error=str(e))
-        raise ValueError(f"Failed to download image: {str(e)}")
 
 def encode_image(job_id: str, image: PILImage, format: str, quality: int = 95) -> Tuple[bytes, str, str]:
     """Encode PIL image to bytes with specified format"""

@@ -1,17 +1,14 @@
 # Qwen-Image-Edit on Runpod Serverless
 
-This project implements a [Runpod](https://www.runpod.io/) Serverless worker for running [Qwen/Qwen-Image-Edit](https://huggingface.co/Qwen/Qwen-Image-Edit), with efficient image caching using Backblaze B2 via MinIO client.
+This project implements a [Runpod](https://www.runpod.io/) Serverless worker for running [Qwen/Qwen-Image-Edit](https://huggingface.co/Qwen/Qwen-Image-Edit).
 
 ## Features
 
 - **URL-only input**: Process images using publicly accessible URLs (no base64 or file uploads)
-- **Smart caching**: Automatically cache source images in Backblaze B2 to avoid repeated downloads
 - **Secure storage**: Store edited results in Backblaze B2 with presigned URLs for secure access
-- **Memory-only processing**: All image processing happens in memory without disk I/O
 - **Comprehensive error handling**: Detailed error responses with taxonomy for debugging
 - **Structured logging**: JSON-formatted logs for monitoring and observability
 - **Fast model downloads**: Uses `hf-transfer` for accelerated Hugging Face model pulls
-- **VRAM optimizations**: Implements multiple techniques to reduce GPU memory usage
 
 ## Prerequisites
 
@@ -225,7 +222,7 @@ For most use cases, `EulerAncestral` (default) or `DPMSolverMultistep` will give
 {
   "status": "error",
   "error": {
-    "type": "BadInput | DownloadFailed | CacheReadFailed | ModelError | StorageError",
+    "type": "BadInput | DownloadFailed | ModelError | StorageError",
     "message": "human-readable message",
     "details": {}
   }
