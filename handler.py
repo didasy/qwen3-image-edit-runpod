@@ -164,38 +164,41 @@ def load_model():
             move_time = time.time() - move_start
             logger.info(job_id, "Moved model to CUDA", move_time=f"{move_time:.2f}s")
             
-            # --- fix black images: run VAE in float32 while keeping UNet in fp16 ---
-            try:
-                # Some VAEs underflow in fp16 -> near-black outputs; upcast decoder path
-                if hasattr(model, "vae") and hasattr(model.vae, "config"):
-                    model.vae.config.force_upcast = True
-            except Exception:
-                pass
-            try:
-                model.vae.to(dtype=torch.float32)
-                logger.info(job_id, "VAE upcast to float32 to prevent underflow")
-            except Exception as e:
-                logger.warning(job_id, "Failed to upcast VAE to float32", error=str(e))
-            try:
-                model.enable_vae_slicing()
-                logger.info(job_id, "Enabled VAE slicing")
-            except Exception as e:
-                logger.warning(job_id, "Failed to enable VAE slicing", error=str(e))
+            # --- fix black images *without* dtype mismatch ---
+
+            vae = getattr(model, "vae", None)
+            if vae is not None:
+                try:
+                    # Keep encoder-side in fp16 to match pipeline inputs
+                    if hasattr(vae, "encoder"):
+                        vae.encoder.to(dtype=torch.float16)
+                    if hasattr(vae, "quant_conv"):
+                        vae.quant_conv.to(dtype=torch.float16)
+
+                    # Upcast decoder-side to fp32 to prevent underflow (black outputs)
+                    if hasattr(vae, "decoder"):
+                        vae.decoder.to(dtype=torch.float32)
+                    if hasattr(vae, "post_quant_conv"):
+                        vae.post_quant_conv.to(dtype=torch.float32)
+
+                    # Optional: slicing helps peak VRAM
+                    try:
+                        model.enable_vae_slicing()
+                    except Exception:
+                        pass
+
+                    # Belt-and-suspenders: ensure latents are fp32 at decode entry
+                    if hasattr(vae, "decode"):
+                        _orig_decode = vae.decode
+                        def _decode_fp32(z, *a, **k):
+                            return _orig_decode(z.to(dtype=torch.float32), *a, **k)
+                        vae.decode = _decode_fp32
+
+                    # (Avoid upcasting the whole VAE or setting force_upcast=True globally)
+                except Exception as e:
+                    logger.warning(job_id, "VAE partial upcast tweak failed", error=str(e))
+
             # --- /fix ---
-            
-            # Enable VAE slicing for additional memory savings (more stable than tiling)
-            # try:
-            #     model.enable_vae_slicing()
-            #     logger.info(job_id, "Enabled VAE slicing")
-            # except Exception as e:
-            #     logger.warning(job_id, "Failed to enable VAE slicing", error=str(e))
-            
-            # Only enable VAE tiling if we have memory issues, as it can cause instability
-            # try:
-            #     model.enable_vae_tiling()
-            #     logger.info(job_id, "Enabled VAE tiling")
-            # except Exception as e:
-            #     logger.warning(job_id, "Failed to enable VAE tiling", error=str(e))
             
             model_load_time = time.time() - model_load_start
             logger.info(job_id, "Successfully loaded Qwen/Qwen-Image-Edit model", 
