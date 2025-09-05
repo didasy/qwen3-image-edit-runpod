@@ -65,7 +65,7 @@ This project implements a [Runpod](https://www.runpod.io/) Serverless worker for
 | `TIMEOUT_SECONDS` | Optional | Operation timeout in seconds (default: `120`) |
 | `LOG_LEVEL` | Optional | Logging level (default: `INFO`) |
 
-Note: The implementation uses scaled dot product attention by default for better quality output. If this fails to initialize, the application will throw an error rather than falling back to attention slicing.
+
 
 ## Usage
 
@@ -136,7 +136,6 @@ The `extra` field accepts additional parameters that can be passed directly to t
 | `negative_prompt_embeds` | torch.Tensor | Pre-generated negative text embeddings |
 | `output_type` | String | Type of output ("pil", "np", or "pt") |
 | `return_dict` | Boolean | Whether to return a dictionary or tuple |
-| `attention_kwargs` | Dict | Additional attention parameters (e.g., `{"scale": 1.0}` for attention scaling) |
 | `callback_on_step_end` | Callable | Callback function at the end of each denoising step |
 | `callback_on_step_end_tensor_inputs` | List[String] | Tensor inputs for the callback function |
 | `max_sequence_length` | Integer | Maximum sequence length for the prompt (default: 512) |
@@ -252,14 +251,12 @@ To reduce GPU memory usage, this implementation includes several optimizations:
 ### Model Loading Optimizations
 - **Float16 Precision**: Uses `torch.float16` instead of `torch.bfloat16` to reduce memory consumption
 - **Direct GPU Loading**: Loads the model directly to GPU for optimal performance
-- **Scaled Dot Product Attention**: Uses `AttnProcessor2_0` for better quality output (no fallback to attention slicing)
 - **VAE Slicing**: Enables VAE slicing for additional memory savings
 - **VAE Tiling**: Enables VAE tiling for processing larger images with limited memory
 
 ### Inference Optimizations
 - **Automatic Memory Cleanup**: Clears GPU cache after each inference operation
 - **Inference Step Limiting**: Caps inference steps at 50 to prevent excessive memory usage
-- **Scaled Dot Product Attention**: Uses more efficient attention mechanism for better quality output
 
 These optimizations can reduce VRAM usage by 30-50% compared to the standard implementation, allowing the model to run on GPUs with as little as 16GB of VRAM while maintaining good performance.
 

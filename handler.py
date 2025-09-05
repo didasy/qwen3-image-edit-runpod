@@ -22,7 +22,6 @@ from dotenv import load_dotenv
 # Import required modules
 from diffusers import QwenImageEditPipeline, DPMSolverMultistepScheduler
 from diffusers.utils import load_image
-from diffusers.models.attention_processor import AttnProcessor2_0
 
 # Load environment variables
 load_dotenv()
@@ -162,13 +161,7 @@ def load_model():
             move_time = time.time() - move_start
             logger.info(job_id, "Moved model to CUDA", move_time=f"{move_time:.2f}s")
             
-            # Enable scaled dot product attention instead of attention slicing for better quality
-            try:
-                model.transformer.set_attn_processor(AttnProcessor2_0())
-                logger.info(job_id, "Enabled scaled dot product attention with AttnProcessor2_0")
-            except Exception as e:
-                logger.error(job_id, "Failed to enable scaled dot product attention", error=str(e))
-                raise RuntimeError(f"Failed to initialize scaled dot product attention: {str(e)}")
+            
             
             # Enable VAE slicing for additional memory savings (more stable than tiling)
             try:
@@ -231,73 +224,10 @@ def get_image_extension(content_type: str, url: str) -> str:
     # Default fallback
     return "png"
 
-def validate_content_type(content_type: str) -> bool:
-    """Validate that content type is an allowed image type"""
-    allowed_types = [
-        "image/jpeg",
-        "image/jpg", 
-        "image/png",
-        "image/webp",
-        "image/bmp",
-        "image/tiff"
-    ]
-    return content_type.lower() in allowed_types
-
-def validate_and_fix_image(job_id: str, image: PILImage) -> PILImage:
-    """Validate image for NaN/inf values and fix if possible"""
-    import numpy as np
-    
-    logger.debug(job_id, "Validating image for NaN/inf values")
-    
-    # Convert PIL image to numpy array for analysis
-    image_array = np.array(image)
-    
-    # Check for NaN or inf values
-    has_nan = np.isnan(image_array).any()
-    has_inf = np.isinf(image_array).any()
-    
-    if has_nan or has_inf:
-        logger.warning(job_id, "Invalid values found in image", 
-                      has_nan=has_nan, has_inf=has_inf)
-        
-        # Try to fix by clipping values to valid range
-        # Convert to float for processing if needed
-        if image_array.dtype != np.float32 and image_array.dtype != np.float64:
-            # If it's already uint8, convert to float in 0-1 range
-            if image_array.dtype == np.uint8:
-                image_array = image_array.astype(np.float32) / 255.0
-            else:
-                image_array = image_array.astype(np.float32)
-        
-        # Replace NaN with 0 and handle inf values
-        if has_nan:
-            image_array = np.nan_to_num(image_array, nan=0.0)
-        
-        if has_inf:
-            # Clip inf values to a reasonable range
-            image_array = np.clip(image_array, -10.0, 10.0)
-        
-        # Clip to valid range [0, 1] for image data
-        image_array = np.clip(image_array, 0.0, 1.0)
-        
-        # Convert back to PIL image
-        # Scale back to 0-255 range and convert to uint8
-        image_array = (image_array * 255).astype(np.uint8)
-        fixed_image = Image.fromarray(image_array, mode='RGB')
-        
-        logger.info(job_id, "Image fixed by clipping invalid values")
-        return fixed_image
-    else:
-        logger.debug(job_id, "Image validation passed - no invalid values found")
-        return image
-
 def encode_image(job_id: str, image: PILImage, format: str, quality: int = 95) -> Tuple[bytes, str, str]:
     """Encode PIL image to bytes with specified format"""
     logger.debug(job_id, "Encoding image", format=format, quality=quality, mode=image.mode)
     encode_start = time.time()
-    
-    # Validate and fix image if needed
-    image = validate_and_fix_image(job_id, image)
     
     buffer = io.BytesIO()
     
@@ -433,7 +363,6 @@ def run_qwen_edit(job_id: str, model, image: PILImage, prompt: str, **kwargs) ->
                 "guidance_scale": guidance_scale,  # Keep guidance_scale as a separate parameter
                 "generator": generator,
                 "return_dict": True,  # Use return_dict=True for consistent handling
-                "attention_kwargs": {"scale": 1.0}  # Add attention scaling parameter
             }
             
             result = model(**model_kwargs)
@@ -613,9 +542,7 @@ def handler(event):
         # Save result as PNG temporarily
         try:
             result_filename = f"{url_hash}.png"
-            # Validate and fix image before saving
-            validated_image = validate_and_fix_image(job_id, edited_image)
-            validated_image.save(result_filename)
+            edited_image.save(result_filename)
             
             # Read the saved PNG file
             with open(result_filename, "rb") as f:
